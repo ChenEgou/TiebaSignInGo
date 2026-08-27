@@ -382,7 +382,8 @@ func runSign() {
 		}
 
 		d := cfg.roundSleep()
-		logInfo("等待 %s 后开始下一轮，并重新获取 tbs", d)
+		// 打印时取整到秒，随机值本身不取整
+		logInfo("等待 %s 后开始下一轮，并重新获取 tbs", d.Round(time.Second))
 		time.Sleep(d)
 		getTbs()
 	}
