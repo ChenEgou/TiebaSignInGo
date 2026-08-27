@@ -1,0 +1,27 @@
+name: keepalive
+
+# GitHub 官方机制：公开仓库连续 60 天无活动，schedule 触发的 workflow 会被自动禁用。
+# 这个 workflow 每月推一次空提交，保证 tieba.yml 的定时任务不会被停掉。
+# 不需要保活的话，直接删掉本文件即可。
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每月 1 号 UTC 03:00
+    - cron: '0 3 1 * *'
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Push empty commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive"
+          git push

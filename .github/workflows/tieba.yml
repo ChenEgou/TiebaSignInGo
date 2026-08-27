@@ -1,0 +1,38 @@
+name: tiebaSign
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    # UTC 时间，00:05 UTC = 北京时间 08:05
+    - cron: '05 00 * * *'
+
+jobs:
+  TiebaSignIn:
+    runs-on: ubuntu-latest
+    # v1 与 Java 版逻辑一致，会跑满 5 轮（约 25 分钟的等待），留足余量防止卡死
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Sign in
+        env:
+          BDUSS: ${{ secrets.BDUSS }}
+          SCKEY: ${{ secrets.SCKEY }}
+        run: |
+          if [ -z "$BDUSS" ]; then
+            echo "::error::未配置 Secrets.BDUSS"
+            exit 1
+          fi
+          # SCKEY 为空时不传第二个参数，与 Java 版 args.length == 2 的判断保持一致
+          if [ -n "$SCKEY" ]; then
+            go run . "$BDUSS" "$SCKEY"
+          else
+            go run . "$BDUSS"
+          fi

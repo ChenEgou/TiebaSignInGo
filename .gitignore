@@ -1,0 +1,13 @@
+# 编译产物
+/tiebasignin
+/dist/
+*.exe
+
+# 测试
+*.out
+*.test
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
