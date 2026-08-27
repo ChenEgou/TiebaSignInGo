@@ -4,13 +4,13 @@ on:
   push:
   workflow_dispatch:
   schedule:
-    # UTC 时间，00:05 UTC = 北京时间 08:05
+    # UTC 时间，00:05 UTC = 北京时间 08:05 / 日本时间 09:05
     - cron: '05 00 * * *'
 
 jobs:
   TiebaSignIn:
     runs-on: ubuntu-latest
-    # 正常约 2-8 分钟（取决于关注的贴吧数量），留足余量防止卡死
+    # 正常约 1-8 分钟（取决于关注的贴吧数量），留足余量防止卡死
     timeout-minutes: 30
 
     steps:
@@ -23,16 +23,8 @@ jobs:
 
       - name: Sign in
         env:
+          # 凭证一律走环境变量，不放命令行参数（进程列表里可见）
           BDUSS: ${{ secrets.BDUSS }}
-          SCKEY: ${{ secrets.SCKEY }}
-        run: |
-          if [ -z "$BDUSS" ]; then
-            echo "::error::未配置 Secrets.BDUSS"
-            exit 1
-          fi
-          # SCKEY 为空时不传第二个参数，与 Java 版 args.length == 2 的判断保持一致
-          if [ -n "$SCKEY" ]; then
-            go run . "$BDUSS" "$SCKEY"
-          else
-            go run . "$BDUSS"
-          fi
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: go run .

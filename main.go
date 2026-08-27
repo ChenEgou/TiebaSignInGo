@@ -33,9 +33,6 @@ var (
 )
 
 const (
-	// server 酱推送（Java 版用的旧接口，已停服，待第三阶段换成 Telegram）
-	serverChanURL = "https://sc.ftqq.com/%s.send"
-
 	// Java 版 Request 类里写死的 User-Agent（其实是桌面版 Chrome，原样保留）
 	userAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36"
 	// 签名盐值，来自贴吧安卓客户端
@@ -407,51 +404,18 @@ func describeSignError(post map[string]any) string {
 	return "error_code=" + code + " " + msg
 }
 
-// send 发送运行结果到微信，通过 server 酱。
-// 注意：sc.ftqq.com 已停服，这里是 Java 版的原样移植，待第三阶段换成 Telegram。
-func send(sckey string) {
-	total := strconv.Itoa(followNum)
-	ok := strconv.Itoa(len(success))
-	fail := strconv.Itoa(followNum - len(success))
-
-	text := "总: " + total + " - "
-	text += "成功: " + ok + " 失败: " + fail
-	desp := "共 " + total + " 贴吧\n\n"
-	desp += "成功: " + ok + " 失败: " + fail
-	body := "text=" + text + "&desp=" + "TiebaSignIn运行结果\n\n" + desp
-
-	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf(serverChanURL, sckey), strings.NewReader(body))
-	if err != nil {
-		logError("server酱发送失败 -- %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		logError("server酱发送失败 -- %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if _, err := io.ReadAll(resp.Body); err != nil {
-		logError("server酱发送失败 -- %v", err)
-		return
-	}
-	logInfo("server酱推送正常")
-}
-
 // ---------------------------------------------------------------------------
 
 func main() {
-	args := os.Args[1:]
-	if len(args) == 0 {
-		logWarn("请在Secrets中填写BDUSS")
+	bduss = firstNonEmpty(argAt(0), os.Getenv("BDUSS"))
+	if bduss == "" {
+		logError("未提供 BDUSS。请设置环境变量 BDUSS，或作为第一个命令行参数传入")
 		os.Exit(1)
 	}
-	bduss = args[0]
 
 	cfg = loadConfig()
 	client = &http.Client{Timeout: cfg.httpTimeout}
+	notify := newNotifier(os.Getenv(envTGToken), os.Getenv(envTGChatID))
 	logInfo("配置: %s", cfg.summary())
 
 	if cfg.startupJitter > 0 {
@@ -464,17 +428,34 @@ func main() {
 	getTbs()
 	getFollow()
 	runSign()
-
 	elapsed := time.Since(start).Round(time.Second)
+
 	if !followOK {
 		logError("未能获取关注贴吧列表，本次没有签到任何贴吧 - 耗时 %s", elapsed)
 		logError("最常见的原因是 BDUSS 已失效，需要重新登录贴吧获取并更新 Secrets")
-	} else {
-		logInfo("共 %d 个贴吧 - 成功: %d - 失败: %d - 耗时 %s",
-			followNum, len(success), followNum-len(success), elapsed)
+		notify.send(alertText(elapsed))
+		return
 	}
 
-	if len(args) == 2 {
-		send(args[1])
+	logInfo("共 %d 个贴吧 - 成功: %d - 失败: %d - 耗时 %s",
+		followNum, len(success), followNum-len(success), elapsed)
+	notify.send(resultText(followNum, len(success), follow, elapsed))
+}
+
+// argAt 取第 i 个命令行参数，越界返回空串。
+func argAt(i int) string {
+	args := os.Args[1:]
+	if i < len(args) {
+		return args[i]
 	}
+	return ""
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

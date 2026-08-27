@@ -7,6 +7,7 @@
 - 零第三方依赖，全部标准库
 - **协议层与 Java 版逐字节一致**（有测试保证，见下），百度收到的请求完全相同
 - 修复了 Java 版的 MD5 缺陷，签到成功率更高
+- 结果推送到 Telegram，BDUSS 失效会主动告警
 - 请求节奏可配置、带随机抖动，比 Java 版更平缓
 - 单次运行约 1 分钟，Java 版固定 27 分钟
 
@@ -25,7 +26,10 @@
 | Name | 必填 | Value |
 |---|---|---|
 | `BDUSS` | 是 | 上一步复制的值 |
-| `SCKEY` | 否 | Server 酱的 key，不填就跳过推送 |
+| `TG_BOT_TOKEN` | 否 | Telegram Bot Token，见下 |
+| `TG_CHAT_ID` | 否 | Telegram Chat ID，见下 |
+
+两个 TG 变量要么都填、要么都不填；只填一个会告警并跳过推送。
 
 ### 3. 开启 Actions
 
@@ -40,15 +44,55 @@ Actions → `tiebaSign` → Run workflow。确认日志里出现 `获取tbs成�
 ## 本地运行
 
 ```bash
-go run . "你的BDUSS"
-go run . "你的BDUSS" "你的SCKEY"
+BDUSS="你的BDUSS" go run .
 ```
+
+也可以作为第一个命令行参数传入（`go run . "你的BDUSS"`），
+但环境变量更安全 —— 命令行参数在进程列表里是可见的。
 
 调试时可以把间隔调到极小，秒出结果：
 
 ```bash
-TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run . "你的BDUSS"
+BDUSS="你的BDUSS" TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run .
 ```
+
+## Telegram 推送
+
+### 建 bot
+
+1. Telegram 里搜 `@BotFather`，点开，发 `/newbot`
+2. 按提示填显示名，再填 username（**必须以 `bot` 结尾且全局唯一**）
+3. 它会返回一串 Token，形如 `123456789:AAHxxxxxxxx`
+
+### 拿 Chat ID
+
+4. 搜到自己刚建的 bot，点进去，**随便发一条消息**
+   （不能跳过：你没先跟 bot 说过话，它就无法主动给你发消息）
+5. 浏览器打开 `https://api.telegram.org/bot<TOKEN>/getUpdates`
+6. 在返回的 JSON 里找 `"chat":{"id":123456789`，这个数字就是 Chat ID
+
+> Token 等同于 bot 的密码。第 5 步的网址里带着 Token，
+> 这个网址和它的返回内容都不要外传。
+
+### 填进 Secrets
+
+`TG_BOT_TOKEN` 和 `TG_CHAT_ID` 两个都填上即可生效。
+
+### 会收到什么
+
+正常跑完是一条汇总（成功/失败数、耗时、签不上的吧名，最多列 30 个）。
+
+**BDUSS 失效时会单独告警**，写明处理步骤 —— 这是最重要的一条，
+因为 workflow 本身不会因此变红，不看日志就发现不了签到早就停了。
+
+实现细节：
+
+- 凭证只从环境变量读，不走命令行参数
+- 万一网络出错，Go 的报错会带上完整请求 URL（内含 Token），
+  代码会先脱敏成 `<TOKEN>` 再写日志，不会泄漏到 Actions 日志
+- 消息超过 Telegram 的 4096 字符上限会自动截断
+- 刻意不使用 Markdown/HTML 格式：吧名里可能含 `_` `*` `[` 等字符，
+  会因转义问题导致整条消息被 Telegram 拒收
 
 ## 配置
 
@@ -77,6 +121,17 @@ TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run . "你的BDUSS"
 | `roundSleepMin` / `Max` | `30s` / `90s` | 轮与轮之间的随机等待。Java 版固定 5 分钟 |
 | `startupJitterMax` | `0s` | 启动前的随机延迟上限，用来打散每天固定的执行时刻。GitHub 的 cron 本身就常延迟几分钟到几十分钟，已有天然抖动，所以默认关闭 |
 | `httpTimeout` | `30s` | 单个请求超时。Java 版没有超时，理论上可以永久挂住 |
+| `formEncoding` | `minimal` | 请求体里吧名的编码方式，见下 |
+
+`formEncoding` 三档：
+
+| 值 | 行为 |
+|---|---|
+| `none` | 原始字节直接拼接，与 Java 版逐字节一致。像 `c++` 这种含 `+` 的吧名会被服务器解析成空格而签到失败 |
+| `minimal` | **默认**。只转义会破坏表单解析的字符（`&` `+` `%` `#` 空格、控制字符），中文和字母数字原样保留 |
+| `full` | 标准 `url.QueryEscape`，中文也变成 `%XX`。这是百度官方客户端的做法，但与现有可用行为差异最大 |
+
+**签名始终基于原始吧名**，`formEncoding` 只影响请求体，不影响签名算法。
 
 每个字段都能用环境变量覆盖（优先级最高），方便在 workflow 里临时调整而不改文件：
 
@@ -89,6 +144,7 @@ TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run . "你的BDUSS"
 | `TIEBA_ROUND_SLEEP_MIN` / `_MAX` | `roundSleepMin` / `Max` |
 | `TIEBA_STARTUP_JITTER_MAX` | `startupJitterMax` |
 | `TIEBA_HTTP_TIMEOUT` | `httpTimeout` |
+| `TIEBA_FORM_ENCODING` | `formEncoding` |
 | `TIEBA_CONFIG` | 配置文件路径，默认 `config.json` |
 
 非法值会打警告并退回默认值；`min > max` 会自动对调。配置文件不存在也能正常跑，直接用默认值。
@@ -138,11 +194,14 @@ TIEBA_TIMING_TEST=1 FORUMS=50 go test -run TestTimingRealistic -v -timeout 20m
 go test -v ./...
 ```
 
-共 15 个用例，其中：
+共 30 个用例，其中：
 
 - `TestMD5CompatMatchesJava` —— 拿 4000 条基准数据逐位比对兼容模式与 Java 的签名输出，
   其中 274 条（6.85%）正好覆盖了 Java 前导零被吃掉的情况
 - `TestMD5FixRepairsTruncation` —— 验证修复后全部为完整 32 位，且与 Java 的差异仅在前导零
+- `TestFormEscapeMinimal*` —— 守住"正常吧名编码前后字节相同"，以及 `c++` 这类会挂的名字确实被修好
+- `TestSignIsAlwaysOverRawName` —— 三种编码模式下，签名都必须基于原始吧名
+- `TestNotifier*` —— 用本地假服务器验证 Telegram 请求格式、Token 脱敏、超长截断、未配置时不发请求
 - `TestRunSign*` —— 起一个本地假服务器模拟百度接口，端到端验证轮次逻辑：
   全部成功只跑 1 轮、偶发失败会重试补签、永远签不上的吧 2 轮后收工、
   请求间隔真的生效、今天已签过的吧不会重复请求
@@ -176,26 +235,30 @@ Java 版用 `new BigInteger(1, digest).toString(16)`，会吃掉哈希开头的 
 注意方向：请求**密度反而降低了**。Java 版会在几秒内朝百度连发几十上百个请求，
 然后干等 5 分钟；本项目是匀速加随机抖动，总时长虽然短得多，但瞬时请求频率低了一个数量级。
 
-### 仍与 Java 版一致、尚未处理的
+### 3. 吧名表单转义（修复）
 
-| 问题 | 位置 | 影响 |
-|---|---|---|
-| Server 酱用已停服的 `sc.ftqq.com` | `serverChanURL` | 推送发不出去，待换 Telegram |
-| 吧名不做 URL 编码 | `signBody()` | 与 Java 版一致，含特殊字符的吧名可能出问题 |
-| `followNum` 初值 201 | `var followNum = 201` | 拉取关注列表失败时，末尾汇总会显示"共 201 个贴吧 - 失败: 201"，属于误导性输出（此时程序会立即退出，不再空转） |
+Java 版把吧名的原始字节直接拼进请求体。像 **`c++`吧**（真实存在）
+这种含 `+` 的名字，`+` 会被服务器解析成空格，签名对不上，必定失败。
 
-### BDUSS 失效时不会报错
+默认的 `minimal` 模式只转义 `&` `+` `%` `#` 空格和控制字符。
+对正常吧名（中文、字母、数字）编码前后**字节完全相同**，
+与 Java 版没有任何差异，因此没有回归风险。
 
-目前 BDUSS 过期的话，日志里会出现 `data.like_forum 缺失（BDUSS 是否已失效？）`，
-但 workflow 仍然是**绿色的成功状态**。如果不主动看日志，可能几个月都发现不了签到早就停了。
-建议后续加上「拉取列表失败则以非零码退出」，让 Actions 直接标红。
+`TestFormEscapeMinimalLeavesNormalNamesUntouched` 专门守住这条保证。
 
-## 第三阶段计划
+> 百度是否会对请求体做 URL 解码无法离线验证。
+> 如果改完发现签到反而挂了，把 `formEncoding` 改回 `"none"` 即可恢复 Java 版行为。
 
-1. 推送从 Server 酱换成 Telegram Bot
-2. BDUSS 失效时让 workflow 标红，避免静默失败
-3. `followNum` 初值改 0，修掉误导性的汇总输出
-4. 吧名做 URL 编码
+### 4. 推送换成 Telegram
+
+Java 版用的 `sc.ftqq.com`（Server 酱旧版）早已停服，推送实际发不出去。
+本项目改用 Telegram Bot API，并新增了 BDUSS 失效告警。
+
+### 仍未处理的
+
+| 问题 | 影响 |
+|---|---|
+| BDUSS 失效时 workflow 仍显示绿色成功 | 靠 Telegram 告警兜住；如果想让 Actions 直接标红，把失败路径改成非零退出即可 |
 
 ## 关于 workflow 被自动禁用
 
