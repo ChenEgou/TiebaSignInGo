@@ -8,5 +8,9 @@
   "roundSleepMax": "90s",
   "startupJitterMax": "0s",
   "httpTimeout": "30s",
-  "formEncoding": "minimal"
+  "formEncoding": "minimal",
+  "ignoreForums": [
+    "贴吧热议"
+  ],
+  "logSignResponse": false
 }

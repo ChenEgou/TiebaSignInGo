@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -41,6 +42,15 @@ type Config struct {
 	// HTTPTimeout 单个 HTTP 请求的超时。
 	HTTPTimeout string `json:"httpTimeout"`
 
+	// IgnoreForums 里的贴吧直接跳过，不发签到请求，也不计入总数。
+	// 用于那些永远签不上的条目（例如"贴吧热议"这种并非真实贴吧的聚合项），
+	// 避免每天的推送都因为它们而变成"有失败"。
+	IgnoreForums []string `json:"ignoreForums"`
+
+	// LogSignResponse 为 true 时打印每次签到的原始响应，用于排查
+	// 百度返回结构变化。会包含 user_id 等信息，平时关闭。
+	LogSignResponse bool `json:"logSignResponse"`
+
 	// FormEncoding 决定请求体里 kw= 后面的吧名怎么写。签名始终基于原始吧名，
 	// 这一项只影响请求体，不影响签名。
 	//
@@ -74,6 +84,8 @@ func defaultConfig() Config {
 		StartupJitterMax:    "0s",
 		HTTPTimeout:         "30s",
 		FormEncoding:        EncodeMinimal,
+		IgnoreForums:        []string{"贴吧热议"},
+		LogSignResponse:     false,
 	}
 }
 
@@ -125,6 +137,17 @@ func applyEnv(cfg *Config) {
 	envStr("TIEBA_STARTUP_JITTER_MAX", &cfg.StartupJitterMax)
 	envStr("TIEBA_HTTP_TIMEOUT", &cfg.HTTPTimeout)
 	envStr("TIEBA_FORM_ENCODING", &cfg.FormEncoding)
+
+	if v := os.Getenv("TIEBA_LOG_SIGN_RESPONSE"); v != "" {
+		switch v {
+		case "1", "true", "TRUE", "True":
+			cfg.LogSignResponse = true
+		case "0", "false", "FALSE", "False":
+			cfg.LogSignResponse = false
+		default:
+			logWarn("TIEBA_LOG_SIGN_RESPONSE=%q 无效，仍用 %v", v, cfg.LogSignResponse)
+		}
+	}
 
 	if v := os.Getenv("TIEBA_ROUND_LIMIT"); v != "" {
 		if n, err := parsePositiveInt(v); err == nil {
@@ -209,6 +232,16 @@ func (c *Config) parseDurations() {
 	}
 }
 
+// ignored 报告某个贴吧是否在忽略名单里。
+func (c *Config) ignored(name string) bool {
+	for _, s := range c.IgnoreForums {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Config) signDelay() time.Duration  { return randDuration(c.signDelayMin, c.signDelayMax) }
 func (c *Config) roundSleep() time.Duration { return randDuration(c.roundSleepMin, c.roundSleepMax) }
 
@@ -227,4 +260,12 @@ func (c *Config) summary() string {
 		c.signDelayMin, c.signDelayMax, c.roundSleepMin, c.roundSleepMax,
 		c.RoundLimit, c.MaxNoProgressRounds, c.startupJitter, c.httpTimeout,
 		c.FormEncoding, c.CompatJavaMD5)
+}
+
+// ignoreSummary 供启动时打印忽略名单。
+func (c *Config) ignoreSummary() string {
+	if len(c.IgnoreForums) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("忽略名单 (%d): %s", len(c.IgnoreForums), strings.Join(c.IgnoreForums, "、"))
 }

@@ -141,7 +141,7 @@ func TestAlertText(t *testing.T) {
 
 func TestResultText(t *testing.T) {
 	// 全部成功
-	got := resultText(3, 3, nil, 54*time.Second)
+	got := resultText(3, 3, nil, nil, 54*time.Second)
 	if !strings.Contains(got, "✅") {
 		t.Errorf("全部成功应有 ✅:\n%s", got)
 	}
@@ -150,7 +150,7 @@ func TestResultText(t *testing.T) {
 	}
 
 	// 有失败
-	got = resultText(3, 1, []string{"吧A", "吧B"}, time.Minute)
+	got = resultText(3, 1, []string{"吧A", "吧B"}, nil, time.Minute)
 	for _, want := range []string{"⚠️", "共 3 个吧", "成功 1", "失败 2", "吧A", "吧B"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("汇总里应包含 %q:\n%s", want, got)
@@ -164,7 +164,7 @@ func TestResultTextCapsFailureList(t *testing.T) {
 	for i := range failed {
 		failed[i] = "吧" + strings.Repeat("x", 20)
 	}
-	got := resultText(100, 0, failed, time.Minute)
+	got := resultText(100, 0, failed, nil, time.Minute)
 	if strings.Count(got, "·") != 30 {
 		t.Errorf("应只列出 30 个，实际 %d 个", strings.Count(got, "·"))
 	}
@@ -175,7 +175,7 @@ func TestResultTextCapsFailureList(t *testing.T) {
 
 // TestResultTextTotalFailure 一个都没签上时措辞要比"有失败"更重。
 func TestResultTextTotalFailure(t *testing.T) {
-	got := resultText(30, 0, []string{"吧A", "吧B"}, time.Minute)
+	got := resultText(30, 0, []string{"吧A", "吧B"}, nil, time.Minute)
 	if !strings.Contains(got, "🚨") {
 		t.Errorf("全部失败应有 🚨:\n%s", got)
 	}
@@ -183,10 +183,77 @@ func TestResultTextTotalFailure(t *testing.T) {
 		t.Errorf("应写明全部失败:\n%s", got)
 	}
 	// 全部成功和部分失败不应误用这个措辞
-	if strings.Contains(resultText(30, 30, nil, time.Minute), "🚨") {
+	if strings.Contains(resultText(30, 30, nil, nil, time.Minute), "🚨") {
 		t.Error("全部成功不该出现 🚨")
 	}
-	if strings.Contains(resultText(30, 28, []string{"吧A"}, time.Minute), "🚨") {
+	if strings.Contains(resultText(30, 28, []string{"吧A"}, nil, time.Minute), "🚨") {
 		t.Error("部分失败不该出现 🚨")
+	}
+}
+
+// TestResultTextShowsExp 汇总里要报出本次实际挣到的经验。
+func TestResultTextShowsExp(t *testing.T) {
+	signed := []signResult{
+		{name: "抗压背锅", exp: 8, cont: 120},
+		{name: "孙笑川", exp: 12, cont: 5},
+		{name: "李毅", exp: 4},
+	}
+	got := resultText(84, 84, nil, signed, 3*time.Minute)
+	for _, want := range []string{"本次新签 3 个", "获得 24 经验", "经验最多", "孙笑川 +12"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("汇总里应包含 %q:\n%s", want, got)
+		}
+	}
+	// 经验最多的排在最前
+	iSun := strings.Index(got, "孙笑川")
+	iKang := strings.Index(got, "· 抗压背锅")
+	if iSun < 0 || iKang < 0 || iSun > iKang {
+		t.Errorf("应按经验从高到低排序:\n%s", got)
+	}
+}
+
+// TestResultTextNoNewSigns 今天全部已签过时，不能报"获得 0 经验"这种误导话。
+func TestResultTextNoNewSigns(t *testing.T) {
+	got := resultText(84, 84, nil, nil, time.Second)
+	if !strings.Contains(got, "本次没有新签的吧") {
+		t.Errorf("应说明没有新签:\n%s", got)
+	}
+	if strings.Contains(got, "获得 0 经验") {
+		t.Errorf("不该出现\"获得 0 经验\":\n%s", got)
+	}
+}
+
+// TestResultTextExpUnparsed 经验字段解析不到时只报数量，不编造数字。
+func TestResultTextExpUnparsed(t *testing.T) {
+	signed := []signResult{{name: "吧A"}, {name: "吧B"}} // exp 全为 0
+	got := resultText(84, 84, nil, signed, time.Second)
+	if !strings.Contains(got, "本次新签 2 个") {
+		t.Errorf("应报出数量:\n%s", got)
+	}
+	if strings.Contains(got, "经验") {
+		t.Errorf("解析不到经验时不该提经验:\n%s", got)
+	}
+}
+
+func TestTopByExp(t *testing.T) {
+	rs := []signResult{
+		{name: "a", exp: 3}, {name: "b", exp: 10},
+		{name: "c", exp: 0}, {name: "d", exp: 7},
+	}
+	top := topByExp(rs, 2)
+	if len(top) != 2 {
+		t.Fatalf("应返回 2 个，实际 %d 个", len(top))
+	}
+	if top[0].name != "b" || top[1].name != "d" {
+		t.Errorf("排序错误: %v", top)
+	}
+	// 经验为 0 的不该出现
+	for _, r := range topByExp(rs, 10) {
+		if r.exp == 0 {
+			t.Errorf("经验为 0 的不该入选: %s", r.name)
+		}
+	}
+	if got := topByExp(nil, 5); got != nil {
+		t.Errorf("空输入应返回 nil，实际 %v", got)
 	}
 }

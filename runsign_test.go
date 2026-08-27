@@ -68,7 +68,7 @@ func (f *fakeTieba) start(t *testing.T, forums []string) *httptest.Server {
 			fmt.Fprint(w, `{"error_code":"160002","error_msg":"签到失败"}`)
 			return
 		}
-		fmt.Fprint(w, `{"error_code":"0"}`)
+		fmt.Fprintf(w, `{"error_code":"0","user_info":{"sign_bonus_point":"8","cont_sign_num":"120","user_sign_rank":"3421"}}`)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -90,9 +90,11 @@ func resetState(t *testing.T, c Config) {
 	cfg.parseDurations()
 	client = &http.Client{Timeout: cfg.httpTimeout}
 	bduss, tbs, follow, success, followNum, followOK = "fake", "", nil, nil, 0, false
+	ignored, signedNow, expWarned = nil, nil, false
 	t.Cleanup(func() {
 		cfg = old
 		follow, success, followNum, followOK = nil, nil, 0, false
+		ignored, signedNow, expWarned = nil, nil, false
 	})
 }
 
@@ -243,4 +245,120 @@ func TestRunSignSkipsAlreadySigned(t *testing.T) {
 	if len(success) != 3 {
 		t.Errorf("成功计数 %d，应为 3（含已签的 2 个）", len(success))
 	}
+}
+
+// TestGetFollowSkipsIgnored 忽略名单里的吧要完全退出统计：
+// 不发请求、不计入总数，否则 success 永远追不上 followNum，会白跑满 5 轮。
+func TestGetFollowSkipsIgnored(t *testing.T) {
+	fake := newFakeTieba(nil, nil)
+	c := fastConfig()
+	c.IgnoreForums = []string{"贴吧热议"}
+	resetState(t, c)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tbs", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"is_login":1,"tbs":"faketbs123"}`)
+	})
+	mux.HandleFunc("/like", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"like_forum":[
+			{"forum_name":"抗压背锅","is_sign":0},
+			{"forum_name":"贴吧热议","is_sign":0},
+			{"forum_name":"孙笑川","is_sign":0}]}}`)
+	})
+	mux.HandleFunc("/sign", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if kw := r.FormValue("kw"); kw == "贴吧热议" {
+			t.Errorf("忽略名单里的吧不该发出签到请求: %s", kw)
+		}
+		fake.mu.Lock()
+		fake.signCnt++
+		fake.mu.Unlock()
+		fmt.Fprint(w, `{"error_code":"0","user_info":{"sign_bonus_point":"8"}}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	oldTbs, oldLike, oldSign := tbsURL, likeURL, signURL
+	tbsURL, likeURL, signURL = srv.URL+"/tbs", srv.URL+"/like", srv.URL+"/sign"
+	t.Cleanup(func() { tbsURL, likeURL, signURL = oldTbs, oldLike, oldSign })
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if followNum != 2 {
+		t.Errorf("followNum = %d, want 2（忽略的不计入总数）", followNum)
+	}
+	if len(ignored) != 1 || ignored[0] != "贴吧热议" {
+		t.Errorf("ignored = %v, want [贴吧热议]", ignored)
+	}
+	if fake.signCnt != 2 {
+		t.Errorf("发出 %d 个签到请求，want 2", fake.signCnt)
+	}
+	if len(success) != 2 {
+		t.Errorf("成功 %d 个，want 2", len(success))
+	}
+	// 关键：全部签完应判定为成功，退出码 0
+	if code := exitCode(followOK, followNum, len(success)); code != 0 {
+		t.Errorf("退出码 %d，want 0（忽略名单不该让 workflow 标红）", code)
+	}
+}
+
+// TestRunSignCollectsExp 签到成功时要把经验解析出来。
+func TestRunSignCollectsExp(t *testing.T) {
+	forums := []string{"抗压背锅", "孙笑川"}
+	fake := newFakeTieba(nil, nil)
+	resetState(t, fastConfig())
+	fake.start(t, forums)
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if len(signedNow) != 2 {
+		t.Fatalf("记录到 %d 个签到结果，want 2", len(signedNow))
+	}
+	for _, r := range signedNow {
+		if r.exp != 8 {
+			t.Errorf("%s 经验 = %d, want 8", r.name, r.exp)
+		}
+		if r.cont != 120 {
+			t.Errorf("%s 连续天数 = %d, want 120", r.name, r.cont)
+		}
+		if r.rank != 3421 {
+			t.Errorf("%s 排名 = %d, want 3421", r.name, r.rank)
+		}
+	}
+	if got := totalExp(signedNow); got != 16 {
+		t.Errorf("总经验 = %d, want 16", got)
+	}
+}
+
+// TestParseSignResultTolerant 字段缺失或是数字类型时都不能崩，
+// 百度的返回结构不保证稳定。
+func TestParseSignResultTolerant(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want signResult
+	}{
+		{"字符串型", `{"user_info":{"sign_bonus_point":"8","cont_sign_num":"3"}}`,
+			signResult{exp: 8, cont: 3}},
+		{"数字型", `{"user_info":{"sign_bonus_point":8,"cont_sign_num":3}}`,
+			signResult{exp: 8, cont: 3}},
+		{"没有 user_info", `{"error_code":"0"}`, signResult{}},
+		{"user_info 为空", `{"user_info":{}}`, signResult{}},
+		{"字段值非数字", `{"user_info":{"sign_bonus_point":"abc"}}`, signResult{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			expWarned = false
+			got := parseSignResult("测试吧", decodeJSON([]byte(c.json)))
+			if got.exp != c.want.exp || got.cont != c.want.cont {
+				t.Errorf("= %+v, want exp=%d cont=%d", got, c.want.exp, c.want.cont)
+			}
+		})
+	}
+	// nil 也不能崩
+	expWarned = false
+	_ = parseSignResult("测试吧", nil)
 }

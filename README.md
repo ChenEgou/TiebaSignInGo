@@ -92,6 +92,33 @@ BDUSS="你的BDUSS" TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run .
 
 正常跑完是一条汇总（成功/失败数、耗时、签不上的吧名，最多列 30 个）。
 
+推送里会报出**本次实际挣到的经验**，以及经验最多的前 5 个吧：
+
+```
+✅ 贴吧签到完成
+
+共 84 个吧　成功 84　失败 0
+本次新签 84 个，获得 672 经验
+耗时 3m2s
+
+经验最多：
+· 孙笑川 +12
+· 抗压背锅 +8
+```
+
+注意「本次新签」只统计**这次运行签上的**。今天之前已经签过的吧不算 ——
+那部分经验不是这次挣的，混在一起数字会失真。
+
+日志里每个吧还会单独显示：
+
+```
+INFO  抗压背锅: 签到成功  +8经验 连续120天 今日第3421名
+```
+
+> 经验数据来自签到接口返回的 `user_info`。百度不保证这个结构长期稳定，
+> 万一解析不到，程序会打一条告警**并列出实际存在的字段名**，签到本身不受影响。
+> 想看完整响应就把 `logSignResponse` 改成 `true`。
+
 三种情况的措辞不同：
 
 | 情况 | 开头 |
@@ -140,6 +167,19 @@ BDUSS="你的BDUSS" TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run .
 | `startupJitterMax` | `0s` | 启动前的随机延迟上限，用来打散每天固定的执行时刻。GitHub 的 cron 本身就常延迟几分钟到几十分钟，已有天然抖动，所以默认关闭 |
 | `httpTimeout` | `30s` | 单个请求超时。Java 版没有超时，理论上可以永久挂住 |
 | `formEncoding` | `minimal` | 请求体里吧名的编码方式，见下 |
+| `ignoreForums` | `["贴吧热议"]` | 直接跳过、不参与统计的贴吧，见下 |
+| `logSignResponse` | `false` | 打印每次签到的原始响应，排查用。含 user_id 等信息，平时关闭 |
+
+### 忽略名单
+
+关注列表里有些条目并非真正的贴吧（例如「贴吧热议」这种聚合项），
+签到接口会一直返回 `error_code=300004`，永远签不上。
+
+放进 `ignoreForums` 后它们**完全退出统计** —— 不发请求、不计入总数。
+这样正常日子的推送是干净的 ✅，出现 ⚠️ 才代表真的有问题，
+不会因为一个天生签不上的条目天天报警而让你麻木。
+
+加别的吧就往数组里加吧名，要和日志里显示的完全一致。
 
 `formEncoding` 三档：
 
@@ -163,6 +203,9 @@ BDUSS="你的BDUSS" TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run .
 | `TIEBA_STARTUP_JITTER_MAX` | `startupJitterMax` |
 | `TIEBA_HTTP_TIMEOUT` | `httpTimeout` |
 | `TIEBA_FORM_ENCODING` | `formEncoding` |
+| `TIEBA_LOG_SIGN_RESPONSE` | `logSignResponse` |
+
+`ignoreForums` 是数组，只能在 `config.json` 里改。
 | `TIEBA_CONFIG` | 配置文件路径，默认 `config.json` |
 
 非法值会打警告并退回默认值；`min > max` 会自动对调。配置文件不存在也能正常跑，直接用默认值。
@@ -212,7 +255,7 @@ TIEBA_TIMING_TEST=1 FORUMS=50 go test -run TestTimingRealistic -v -timeout 20m
 go test -v ./...
 ```
 
-共 32 个用例，其中：
+共 39 个用例，其中：
 
 - `TestMD5CompatMatchesJava` —— 拿 4000 条基准数据逐位比对兼容模式与 Java 的签名输出，
   其中 274 条（6.85%）正好覆盖了 Java 前导零被吃掉的情况
@@ -221,6 +264,8 @@ go test -v ./...
 - `TestSignIsAlwaysOverRawName` —— 三种编码模式下，签名都必须基于原始吧名
 - `TestNotifier*` —— 用本地假服务器验证 Telegram 请求格式、Token 脱敏、超长截断、未配置时不发请求
 - `TestExitCode` —— 守住"部分贴吧失败不标红"，避免告警信号被日常噪音淹没
+- `TestGetFollowSkipsIgnored` —— 忽略名单里的吧不发请求、不计入总数，且不会让 workflow 标红
+- `TestParseSignResultTolerant` —— 经验字段是字符串、是数字、缺失、非数字时都不能崩
 - `TestRunSign*` —— 起一个本地假服务器模拟百度接口，端到端验证轮次逻辑：
   全部成功只跑 1 轮、偶发失败会重试补签、永远签不上的吧 2 轮后收工、
   请求间隔真的生效、今天已签过的吧不会重复请求

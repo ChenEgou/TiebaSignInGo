@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,13 @@ var (
 	follow   []string // 待签到的贴吧
 	success  []string // 已签到成功的贴吧
 	followOK bool     // 关注列表是否成功拉取到
+	ignored  []string // 命中忽略名单、直接跳过的贴吧
+
+	// signedNow 本次运行实际签上的贴吧及其经验信息。
+	// 今天之前已签到的吧不在此列 —— 它们的经验不是这次挣的。
+	signedNow []signResult
+	// expWarned 保证"解析不到经验字段"的告警只打一次
+	expWarned bool
 
 	// followNum 关注的贴吧总数。Java 版初值是 201，拉取失败时会让末尾汇总
 	// 输出"共 201 个贴吧 - 失败: 201"这种误导信息，这里改为 0。
@@ -128,6 +136,62 @@ func getArray(m map[string]any, key string) []any {
 		return v
 	}
 	return nil
+}
+
+// signResult 一次成功签到的收获。字段缺失时为 0。
+type signResult struct {
+	name string
+	exp  int // 本次获得的经验
+	cont int // 连续签到天数
+	rank int // 今日本吧签到排名
+}
+
+// getInt 取整数字段。百度的数字有时是 JSON number，有时是字符串，两种都要认。
+func getInt(m map[string]any, key string) int {
+	s := getString(m, key)
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// parseSignResult 从签到响应里提取经验等信息。
+//
+// 百度把这些放在 user_info 下面。字段名不保证长期稳定，所以解析不到时
+// 不报错，只在第一次打一条告警并列出实际存在的字段，方便对照修正。
+func parseSignResult(name string, post map[string]any) signResult {
+	r := signResult{name: name}
+	info := getObject(post, "user_info")
+	if info == nil {
+		warnExpOnce("签到响应里没有 user_info", post)
+		return r
+	}
+	r.exp = getInt(info, "sign_bonus_point")
+	r.cont = getInt(info, "cont_sign_num")
+	r.rank = getInt(info, "user_sign_rank")
+	if r.exp == 0 {
+		warnExpOnce("user_info 里取不到 sign_bonus_point", info)
+	}
+	return r
+}
+
+// warnExpOnce 打印一次经验解析失败的告警，附上实际可用的字段名。
+func warnExpOnce(reason string, m map[string]any) {
+	if expWarned {
+		return
+	}
+	expWarned = true
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	logWarn("经验值解析失败（%s），签到本身不受影响。实际字段: %s", reason, strings.Join(keys, ", "))
+	logWarn("把 config.json 的 logSignResponse 改成 true 可以打印完整响应，据此修正字段名")
 }
 
 // ---------------------------------------------------------------------------
@@ -309,21 +373,31 @@ func getFollow() {
 	}
 	logInfo("获取贴吧列表成功")
 	followOK = true
-	followNum = len(jsonArray)
+	followNum = 0
 	for _, item := range jsonArray {
 		obj, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
 		name := getString(obj, "forum_name")
+		if cfg.ignored(name) {
+			// 忽略名单里的吧完全不参与统计，否则 success 永远追不上 followNum
+			ignored = append(ignored, name)
+			continue
+		}
+		followNum++
 		if getString(obj, "is_sign") == "0" {
 			follow = append(follow, name) // 未签到，待签
 		} else {
 			success = append(success, name) // 今天已经签过了
 		}
 	}
-	logInfo("共关注 %d 个贴吧，其中 %d 个今天已签到，待签 %d 个",
+	msg := fmt.Sprintf("共关注 %d 个贴吧，其中 %d 个今天已签到，待签 %d 个",
 		followNum, len(success), len(follow))
+	if len(ignored) > 0 {
+		msg += fmt.Sprintf("（另有 %d 个在忽略名单: %s）", len(ignored), strings.Join(ignored, "、"))
+	}
+	logInfo("%s", msg)
 }
 
 // runSign 逐个签到。与 Java 版相比有三处节奏上的改动：
@@ -348,9 +422,15 @@ func runSign() {
 				time.Sleep(cfg.signDelay())
 			}
 			post := requestPost(signURL, signBody(s, tbs))
+			if cfg.LogSignResponse {
+				raw, _ := json.Marshal(post)
+				logInfo("%s: 原始响应 %s", s, raw)
+			}
 			if getString(post, "error_code") == "0" {
 				success = append(success, s)
-				logInfo("%s: 签到成功", s)
+				r := parseSignResult(s, post)
+				signedNow = append(signedNow, r)
+				logInfo("%s: 签到成功%s", s, r.describe())
 			} else {
 				remain = append(remain, s)
 				logWarn("%s: 签到失败 -- %s", s, describeSignError(post))
@@ -418,6 +498,9 @@ func main() {
 	client = &http.Client{Timeout: cfg.httpTimeout}
 	notify := newNotifier(os.Getenv(envTGToken), os.Getenv(envTGChatID))
 	logInfo("配置: %s", cfg.summary())
+	if s := cfg.ignoreSummary(); s != "" {
+		logInfo("%s", s)
+	}
 
 	if cfg.startupJitter > 0 {
 		d := randDuration(0, cfg.startupJitter)
@@ -440,7 +523,10 @@ func main() {
 
 	logInfo("共 %d 个贴吧 - 成功: %d - 失败: %d - 耗时 %s",
 		followNum, len(success), followNum-len(success), elapsed)
-	notify.send(resultText(followNum, len(success), follow, elapsed))
+	if len(signedNow) > 0 {
+		logInfo("本次新签 %d 个贴吧，共获得 %d 经验", len(signedNow), totalExp(signedNow))
+	}
+	notify.send(resultText(followNum, len(success), follow, signedNow, elapsed))
 
 	// 推送发完再决定退出码，保证告警一定送得出去
 	if code := exitCode(followOK, followNum, len(success)); code != 0 {
@@ -484,4 +570,31 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// describe 把经验信息渲染成日志后缀，没有数据时返回空串。
+func (r signResult) describe() string {
+	var parts []string
+	if r.exp > 0 {
+		parts = append(parts, fmt.Sprintf("+%d经验", r.exp))
+	}
+	if r.cont > 0 {
+		parts = append(parts, fmt.Sprintf("连续%d天", r.cont))
+	}
+	if r.rank > 0 {
+		parts = append(parts, fmt.Sprintf("今日第%d名", r.rank))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(parts, " ")
+}
+
+// totalExp 本次运行一共挣到的经验。
+func totalExp(rs []signResult) int {
+	n := 0
+	for _, r := range rs {
+		n += r.exp
+	}
+	return n
 }

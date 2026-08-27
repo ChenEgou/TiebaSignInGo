@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -119,7 +120,10 @@ func alertText(elapsed time.Duration) string {
 }
 
 // resultText 正常跑完后的汇总。
-func resultText(total, ok int, failed []string, elapsed time.Duration) string {
+//
+// signedNow 是【本次运行】签上的吧。今天之前已经签过的不在其中 ——
+// 那部分经验不是这次挣的，混在一起会让数字失真。
+func resultText(total, ok int, failed []string, signedNow []signResult, elapsed time.Duration) string {
 	var b strings.Builder
 	switch {
 	case total > 0 && ok == 0:
@@ -133,7 +137,25 @@ func resultText(total, ok int, failed []string, elapsed time.Duration) string {
 		b.WriteString("⚠️ 贴吧签到完成（有失败）\n\n")
 	}
 	b.WriteString(fmt.Sprintf("共 %d 个吧　成功 %d　失败 %d\n", total, ok, total-ok))
+
+	switch exp := totalExp(signedNow); {
+	case len(signedNow) == 0:
+		b.WriteString("本次没有新签的吧（今天都已签过）\n")
+	case exp > 0:
+		b.WriteString(fmt.Sprintf("本次新签 %d 个，获得 %d 经验\n", len(signedNow), exp))
+	default:
+		// 经验字段没解析出来，只报数量，不编造数字
+		b.WriteString(fmt.Sprintf("本次新签 %d 个\n", len(signedNow)))
+	}
 	b.WriteString(fmt.Sprintf("耗时 %s\n", elapsed))
+
+	// 经验最多的几个吧，让推送有点信息量
+	if top := topByExp(signedNow, 5); len(top) > 0 {
+		b.WriteString("\n经验最多：\n")
+		for _, r := range top {
+			b.WriteString(fmt.Sprintf("· %s +%d\n", r.name, r.exp))
+		}
+	}
 
 	if len(failed) > 0 {
 		b.WriteString("\n未签到成功：\n")
@@ -148,4 +170,19 @@ func resultText(total, ok int, failed []string, elapsed time.Duration) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// topByExp 返回经验最高的前 n 个，经验为 0 的不算。
+func topByExp(rs []signResult, n int) []signResult {
+	var out []signResult
+	for _, r := range rs {
+		if r.exp > 0 {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].exp > out[j].exp })
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
 }
