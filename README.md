@@ -73,6 +73,16 @@ BDUSS="你的BDUSS" TIEBA_SIGN_DELAY_MIN=10ms TIEBA_SIGN_DELAY_MAX=20ms go run .
 
 > Token 等同于 bot 的密码。第 5 步的网址里带着 Token，
 > 这个网址和它的返回内容都不要外传。
+>
+> **不要把 Token 直接打在命令行上** —— 它会被写进 shell 历史记录，
+> 截图终端时也会连带泄漏。本地调试用 `.env`：
+>
+> ```bash
+> cp .env.example .env   # 填入真实值，.env 已被 gitignore
+> set -a && source .env && set +a && go run .
+> ```
+>
+> 万一泄漏了：BotFather 发 `/revoke`，选中 bot，旧 Token 立刻作废并换发新的。
 
 ### 填进 Secrets
 

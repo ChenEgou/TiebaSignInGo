@@ -11,3 +11,9 @@
 .idea/
 .vscode/
 .DS_Store
+
+# 本地凭证，绝不提交
+.env
+.env.*
+!.env.example
+*.token
