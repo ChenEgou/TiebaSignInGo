@@ -7,5 +7,6 @@
   "roundSleepMin": "30s",
   "roundSleepMax": "90s",
   "startupJitterMax": "0s",
-  "httpTimeout": "30s"
+  "httpTimeout": "30s",
+  "formEncoding": "minimal"
 }

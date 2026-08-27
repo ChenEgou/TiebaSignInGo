@@ -41,6 +41,18 @@ type Config struct {
 	// HTTPTimeout 单个 HTTP 请求的超时。
 	HTTPTimeout string `json:"httpTimeout"`
 
+	// FormEncoding 决定请求体里 kw= 后面的吧名怎么写。签名始终基于原始吧名，
+	// 这一项只影响请求体，不影响签名。
+	//
+	//   none    —— 原始字节直接拼接，与 Java 版完全一致。
+	//              像 "c++" 这样含 + 的吧名会被服务器解析成空格而签到失败。
+	//   minimal —— 只编码会破坏表单解析的字符（% & + # 空格和控制字符），
+	//              中文等其它字节原样保留。对正常吧名与 none 的字节完全相同，
+	//              没有回归风险，同时修好含特殊字符的吧名。（默认）
+	//   full    —— 标准 url.QueryEscape，中文也会变成 %XX。
+	//              这是百度官方客户端的做法，但与现有可用行为差异最大。
+	FormEncoding string `json:"formEncoding"`
+
 	// 以下为解析后的时长，不参与 JSON
 	signDelayMin  time.Duration
 	signDelayMax  time.Duration
@@ -61,10 +73,18 @@ func defaultConfig() Config {
 		RoundSleepMax:       "90s",
 		StartupJitterMax:    "0s",
 		HTTPTimeout:         "30s",
+		FormEncoding:        EncodeMinimal,
 	}
 }
 
 const configPathEnv = "TIEBA_CONFIG"
+
+// FormEncoding 的三个取值
+const (
+	EncodeNone    = "none"
+	EncodeMinimal = "minimal"
+	EncodeFull    = "full"
+)
 
 // loadConfig 读取默认值 -> config.json -> 环境变量，逐层覆盖。
 // config.json 不存在不算错误，直接用默认值。
@@ -104,6 +124,7 @@ func applyEnv(cfg *Config) {
 	envStr("TIEBA_ROUND_SLEEP_MAX", &cfg.RoundSleepMax)
 	envStr("TIEBA_STARTUP_JITTER_MAX", &cfg.StartupJitterMax)
 	envStr("TIEBA_HTTP_TIMEOUT", &cfg.HTTPTimeout)
+	envStr("TIEBA_FORM_ENCODING", &cfg.FormEncoding)
 
 	if v := os.Getenv("TIEBA_ROUND_LIMIT"); v != "" {
 		if n, err := parsePositiveInt(v); err == nil {
@@ -179,6 +200,13 @@ func (c *Config) parseDurations() {
 		logWarn("maxNoProgressRounds=%d 无效，改用 %d", c.MaxNoProgressRounds, def.MaxNoProgressRounds)
 		c.MaxNoProgressRounds = def.MaxNoProgressRounds
 	}
+	switch c.FormEncoding {
+	case EncodeNone, EncodeMinimal, EncodeFull:
+	default:
+		logWarn("formEncoding=%q 无效（可选 %s / %s / %s），改用 %s",
+			c.FormEncoding, EncodeNone, EncodeMinimal, EncodeFull, def.FormEncoding)
+		c.FormEncoding = def.FormEncoding
+	}
 }
 
 func (c *Config) signDelay() time.Duration  { return randDuration(c.signDelayMin, c.signDelayMax) }
@@ -195,7 +223,8 @@ func randDuration(min, max time.Duration) time.Duration {
 // summary 供启动时打印，方便在 Actions 日志里确认这次跑用的是什么参数。
 func (c *Config) summary() string {
 	return fmt.Sprintf(
-		"签到间隔 %s~%s | 轮间等待 %s~%s | 最多 %d 轮 | 连续 %d 轮无进展则提前结束 | 启动抖动 ≤%s | 超时 %s | JavaMD5兼容 %v",
+		"签到间隔 %s~%s | 轮间等待 %s~%s | 最多 %d 轮 | 连续 %d 轮无进展则提前结束 | 启动抖动 ≤%s | 超时 %s | 表单编码 %s | JavaMD5兼容 %v",
 		c.signDelayMin, c.signDelayMax, c.roundSleepMin, c.roundSleepMax,
-		c.RoundLimit, c.MaxNoProgressRounds, c.startupJitter, c.httpTimeout, c.CompatJavaMD5)
+		c.RoundLimit, c.MaxNoProgressRounds, c.startupJitter, c.httpTimeout,
+		c.FormEncoding, c.CompatJavaMD5)
 }

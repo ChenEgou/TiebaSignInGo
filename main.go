@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -49,13 +50,17 @@ const (
 // ---------------------------------------------------------------------------
 
 var (
-	cfg       Config
-	client    *http.Client
-	bduss     string   // 对应 Cookie 单例里的 BDUSS
-	tbs       string   // 用户的 tbs
-	follow    []string // 待签到的贴吧
-	success   []string // 已签到成功的贴吧
-	followNum = 201    // Java 版初值就是 201，getFollow 成功后会被覆盖
+	cfg      Config
+	client   *http.Client
+	bduss    string   // 对应 Cookie 单例里的 BDUSS
+	tbs      string   // 用户的 tbs
+	follow   []string // 待签到的贴吧
+	success  []string // 已签到成功的贴吧
+	followOK bool     // 关注列表是否成功拉取到
+
+	// followNum 关注的贴吧总数。Java 版初值是 201，拉取失败时会让末尾汇总
+	// 输出"共 201 个贴吧 - 失败: 201"这种误导信息，这里改为 0。
+	followNum = 0
 )
 
 func cookie() string { return "BDUSS=" + bduss }
@@ -150,9 +155,70 @@ func md5Hex(str string, javaCompat bool) string {
 
 func encodeMD5(str string) string { return md5Hex(str, cfg.CompatJavaMD5) }
 
-// signBody 拼接签到请求体。格式必须与 Java 版一致：吧名不做 URL 编码。
+// needsFormEscape 报告某个字节在 application/x-www-form-urlencoded 的请求体里
+// 是否会破坏解析。
+//
+// 只挑真正有害的：
+//   - '&' 会被当成参数分隔符
+//   - '+' 会被解码成空格（"c++"吧 就是栽在这里）
+//   - '%' 会被当成百分号转义的开头
+//   - '#' 会被当成 fragment 起点
+//   - 空格和控制字符在请求体里本就非法
+//
+// 中文等多字节 UTF-8 的每个字节都 >= 0x80，不在此列，会原样保留 ——
+// 这保证了正常吧名编码前后字节完全相同，与 Java 版没有任何差异。
+func needsFormEscape(c byte) bool {
+	switch c {
+	case '&', '+', '%', '#', ' ':
+		return true
+	}
+	return c < 0x20 || c == 0x7f
+}
+
+// formEscapeMinimal 只对 needsFormEscape 认定的字节做百分号编码。
+func formEscapeMinimal(s string) string {
+	need := false
+	for i := 0; i < len(s); i++ {
+		if needsFormEscape(s[i]) {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return s // 绝大多数吧名走这条路，零改动
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; needsFormEscape(c) {
+			fmt.Fprintf(&b, "%%%02X", c)
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// formEncode 按配置对请求体里的参数值做编码。
+func formEncode(s string) string {
+	switch cfg.FormEncoding {
+	case EncodeNone:
+		return s
+	case EncodeFull:
+		return url.QueryEscape(s)
+	default:
+		return formEscapeMinimal(s)
+	}
+}
+
+// signBody 拼接签到请求体。
+//
+// 注意签名与请求体用的是不同的值：
+//   - 签名基于【原始】吧名，这是百度客户端的算法，任何情况下都不能改
+//   - 请求体里的吧名按 cfg.FormEncoding 编码，默认只转义会破坏解析的字符
 func signBody(kw, tbs string) string {
-	return "kw=" + kw + "&tbs=" + tbs + "&sign=" + encodeMD5("kw="+kw+"tbs="+tbs+signSalt)
+	sign := encodeMD5("kw=" + kw + "tbs=" + tbs + signSalt)
+	return "kw=" + formEncode(kw) + "&tbs=" + tbs + "&sign=" + sign
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +311,7 @@ func getFollow() {
 		return
 	}
 	logInfo("获取贴吧列表成功")
+	followOK = true
 	followNum = len(jsonArray)
 	for _, item := range jsonArray {
 		obj, ok := item.(map[string]any)
@@ -397,8 +464,15 @@ func main() {
 	getTbs()
 	getFollow()
 	runSign()
-	logInfo("共 %d 个贴吧 - 成功: %d - 失败: %d - 耗时 %s",
-		followNum, len(success), followNum-len(success), time.Since(start).Round(time.Second))
+
+	elapsed := time.Since(start).Round(time.Second)
+	if !followOK {
+		logError("未能获取关注贴吧列表，本次没有签到任何贴吧 - 耗时 %s", elapsed)
+		logError("最常见的原因是 BDUSS 已失效，需要重新登录贴吧获取并更新 Secrets")
+	} else {
+		logInfo("共 %d 个贴吧 - 成功: %d - 失败: %d - 耗时 %s",
+			followNum, len(success), followNum-len(success), elapsed)
+	}
 
 	if len(args) == 2 {
 		send(args[1])

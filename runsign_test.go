@@ -89,10 +89,10 @@ func resetState(t *testing.T, c Config) {
 	cfg = c
 	cfg.parseDurations()
 	client = &http.Client{Timeout: cfg.httpTimeout}
-	bduss, tbs, follow, success, followNum = "fake", "", nil, nil, 201
+	bduss, tbs, follow, success, followNum, followOK = "fake", "", nil, nil, 0, false
 	t.Cleanup(func() {
 		cfg = old
-		follow, success, followNum = nil, nil, 201
+		follow, success, followNum, followOK = nil, nil, 0, false
 	})
 }
 
