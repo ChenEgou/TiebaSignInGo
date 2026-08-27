@@ -136,3 +136,33 @@ func TestConfigFormEncodingValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestExitCode 决定 Actions 上这次 run 是绿还是红。
+//
+// 关键保证：部分贴吧失败【不能】标红。有些吧永远签不上，
+// 天天标红会让这个信号彻底失去意义。
+func TestExitCode(t *testing.T) {
+	cases := []struct {
+		name     string
+		followOK bool
+		total    int
+		ok       int
+		want     int
+		why      string
+	}{
+		{"拉不到关注列表", false, 0, 0, 1, "BDUSS 失效或网络不通"},
+		{"拉到列表但一个没签上", true, 30, 0, 1, "通常是 tbs 获取失败，整体故障"},
+		{"全部签到成功", true, 30, 30, 0, ""},
+		{"部分失败", true, 30, 28, 0, "个别吧签不上属正常，不该标红"},
+		{"只成功一个", true, 30, 1, 0, "有进展就不算整体故障"},
+		{"一个吧都没关注", true, 0, 0, 0, "没关注贴吧不是错误"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := exitCode(c.followOK, c.total, c.ok); got != c.want {
+				t.Errorf("exitCode(followOK=%v, total=%d, ok=%d) = %d, want %d  %s",
+					c.followOK, c.total, c.ok, got, c.want, c.why)
+			}
+		})
+	}
+}

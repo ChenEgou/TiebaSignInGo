@@ -172,3 +172,21 @@ func TestResultTextCapsFailureList(t *testing.T) {
 		t.Errorf("应提示剩余数量:\n%s", got)
 	}
 }
+
+// TestResultTextTotalFailure 一个都没签上时措辞要比"有失败"更重。
+func TestResultTextTotalFailure(t *testing.T) {
+	got := resultText(30, 0, []string{"吧A", "吧B"}, time.Minute)
+	if !strings.Contains(got, "🚨") {
+		t.Errorf("全部失败应有 🚨:\n%s", got)
+	}
+	if !strings.Contains(got, "全部失败") {
+		t.Errorf("应写明全部失败:\n%s", got)
+	}
+	// 全部成功和部分失败不应误用这个措辞
+	if strings.Contains(resultText(30, 30, nil, time.Minute), "🚨") {
+		t.Error("全部成功不该出现 🚨")
+	}
+	if strings.Contains(resultText(30, 28, []string{"吧A"}, time.Minute), "🚨") {
+		t.Error("部分失败不该出现 🚨")
+	}
+}

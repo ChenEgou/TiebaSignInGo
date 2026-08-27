@@ -434,12 +434,37 @@ func main() {
 		logError("未能获取关注贴吧列表，本次没有签到任何贴吧 - 耗时 %s", elapsed)
 		logError("最常见的原因是 BDUSS 已失效，需要重新登录贴吧获取并更新 Secrets")
 		notify.send(alertText(elapsed))
-		return
+		os.Exit(1)
 	}
 
 	logInfo("共 %d 个贴吧 - 成功: %d - 失败: %d - 耗时 %s",
 		followNum, len(success), followNum-len(success), elapsed)
 	notify.send(resultText(followNum, len(success), follow, elapsed))
+
+	// 推送发完再决定退出码，保证告警一定送得出去
+	if code := exitCode(followOK, followNum, len(success)); code != 0 {
+		logError("本次运行判定为失败，以退出码 %d 结束，workflow 将标红", code)
+		os.Exit(code)
+	}
+}
+
+// exitCode 决定进程退出码，也就是 GitHub Actions 上这次 run 是绿还是红。
+//
+// 判定为失败（红）的只有两种情况，都代表"整体坏了"：
+//
+//   - 关注列表拉不到：BDUSS 失效或网络不通，一个吧都没签
+//   - 拉到了列表但一个都没签成功：通常是 tbs 获取失败导致全军覆没
+//
+// 部分贴吧失败【不】标红。有些吧（已封禁的、有特殊规则的）本来就永远签不上，
+// 让它天天标红会把这个信号彻底废掉 —— 那种情况看 Telegram 里的失败列表即可。
+func exitCode(followOK bool, total, ok int) int {
+	if !followOK {
+		return 1
+	}
+	if total > 0 && ok == 0 {
+		return 1
+	}
+	return 0
 }
 
 // argAt 取第 i 个命令行参数，越界返回空串。

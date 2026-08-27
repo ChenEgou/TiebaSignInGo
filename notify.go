@@ -121,9 +121,15 @@ func alertText(elapsed time.Duration) string {
 // resultText 正常跑完后的汇总。
 func resultText(total, ok int, failed []string, elapsed time.Duration) string {
 	var b strings.Builder
-	if len(failed) == 0 {
+	switch {
+	case total > 0 && ok == 0:
+		// 一个都没签上，通常不是个别贴吧的问题，而是整体出了故障
+		b.WriteString("🚨 贴吧签到全部失败\n\n")
+		b.WriteString("一个吧都没签上，可能是 tbs 获取失败或账号异常。\n")
+		b.WriteString("建议去 Actions 日志里看具体报错。\n\n")
+	case len(failed) == 0:
 		b.WriteString("✅ 贴吧签到完成\n\n")
-	} else {
+	default:
 		b.WriteString("⚠️ 贴吧签到完成（有失败）\n\n")
 	}
 	b.WriteString(fmt.Sprintf("共 %d 个吧　成功 %d　失败 %d\n", total, ok, total-ok))
