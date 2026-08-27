@@ -1,0 +1,11 @@
+{
+  "compatJavaMD5": false,
+  "roundLimit": 5,
+  "maxNoProgressRounds": 2,
+  "signDelayMin": "1s",
+  "signDelayMax": "3s",
+  "roundSleepMin": "30s",
+  "roundSleepMax": "90s",
+  "startupJitterMax": "0s",
+  "httpTimeout": "30s"
+}

@@ -10,8 +10,8 @@ on:
 jobs:
   TiebaSignIn:
     runs-on: ubuntu-latest
-    # v1 与 Java 版逻辑一致，会跑满 5 轮（约 25 分钟的等待），留足余量防止卡死
-    timeout-minutes: 40
+    # 正常约 2-8 分钟（取决于关注的贴吧数量），留足余量防止卡死
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
