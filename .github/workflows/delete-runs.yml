@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete workflow runs
+        # 注意：retain_days: 0 配合 keep_minimum_runs: 0 会清空全部运行记录，
+        # 一条都不保留。本 workflow 仅手动触发，不会自动执行。
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}
