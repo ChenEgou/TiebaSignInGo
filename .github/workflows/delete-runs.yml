@@ -2,6 +2,11 @@ name: Delete old workflow runs
 
 on:
   workflow_dispatch:
+  schedule:
+    # 每月 1 号 06:41 UTC = 15:41 日本 / 14:41 北京。
+    # 避开整点和 00:00 UTC 拥堵段；排在当天两个签到槽位(00:37 / 05:23 UTC)之后，
+    # 免得刚跑完的签到记录还没看就被清掉。
+    - cron: '41 06 1 * *'
 
 # 需要写权限才能删除运行记录
 permissions:
@@ -13,11 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete workflow runs
-        # 注意：retain_days: 0 配合 keep_minimum_runs: 0 会清空全部运行记录，
-        # 一条都不保留。本 workflow 仅手动触发，不会自动执行。
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
-          retain_days: 0
-          keep_minimum_runs: 0
+          # 删掉 7 天前的旧记录，但无论如何保留最近 5 条。
+          # 留够证据排查「定时任务到底跑没跑」—— 别把自己的追溯手段也清掉。
+          retain_days: 7
+          keep_minimum_runs: 5
