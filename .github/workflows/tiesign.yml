@@ -1,6 +1,7 @@
 name: tiesign
 
 on:
+  push:
   workflow_dispatch:
   schedule:
     # 与老仓库 TiebaSignIn 保持完全一致，用于 A/B 对照
