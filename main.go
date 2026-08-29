@@ -16,11 +16,9 @@ import (
 	"time"
 )
 
-// ---------------------------------------------------------------------------
 // 接口地址 —— 与 Java 版 top.srcrs.Run 完全一致，不要改动。
 // 这几个字符串决定了百度把这次请求当成"手机客户端签到"（经验更高），
 // 与使用什么编程语言无关。
-// ---------------------------------------------------------------------------
 
 // 三个接口地址。声明为 var 而非 const，只是为了让测试能指向本地假服务器，
 // 运行时不会被修改。
@@ -43,9 +41,7 @@ const (
 	postHost = "tieba.baidu.com"
 )
 
-// ---------------------------------------------------------------------------
 // 全局状态 —— 对应 Java 版 Run 类的字段
-// ---------------------------------------------------------------------------
 
 var (
 	cfg      Config
@@ -70,9 +66,7 @@ var (
 
 func cookie() string { return "BDUSS=" + bduss }
 
-// ---------------------------------------------------------------------------
 // 日志
-// ---------------------------------------------------------------------------
 
 func logAt(level, format string, a ...any) {
 	fmt.Printf("%s %-5s %s\n", time.Now().Format("2006-01-02 15:04:05"), level, fmt.Sprintf(format, a...))
@@ -82,11 +76,9 @@ func logInfo(format string, a ...any)  { logAt("INFO", format, a...) }
 func logWarn(format string, a ...any)  { logAt("WARN", format, a...) }
 func logError(format string, a ...any) { logAt("ERROR", format, a...) }
 
-// ---------------------------------------------------------------------------
 // JSON helper —— 模拟 fastjson 的 getString（数字/布尔都会被转成字符串）。
 // 百度的 is_login / is_sign / error_code 在不同接口里有时是数字有时是字符串，
 // 这里必须两种都能处理。
-// ---------------------------------------------------------------------------
 
 func decodeJSON(b []byte) map[string]any {
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -194,9 +186,7 @@ func warnExpOnce(reason string, m map[string]any) {
 	logWarn("把 config.json 的 logSignResponse 改成 true 可以打印完整响应，据此修正字段名")
 }
 
-// ---------------------------------------------------------------------------
 // MD5 —— 对应 Java 版 top.srcrs.util.Encryption
-// ---------------------------------------------------------------------------
 
 // md5Hex 计算 MD5。javaCompat 为 true 时复刻 Java 的
 // new BigInteger(1, digest).toString(16)：结果按正整数打印，前导零全部消失，
@@ -282,9 +272,7 @@ func signBody(kw, tbs string) string {
 	return "kw=" + formEncode(kw) + "&tbs=" + tbs + "&sign=" + sign
 }
 
-// ---------------------------------------------------------------------------
 // 网络请求 —— 对应 Java 版 top.srcrs.util.Request
-// ---------------------------------------------------------------------------
 
 func requestGet(url string) map[string]any {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -340,9 +328,7 @@ func requestPost(url, body string) map[string]any {
 	return decodeJSON(respBody)
 }
 
-// ---------------------------------------------------------------------------
 // 业务逻辑 —— 对应 Java 版 Run 的四个方法
-// ---------------------------------------------------------------------------
 
 // getTbs 登录校验并取得 tbs，签到时需要这个参数。
 func getTbs() {
@@ -395,7 +381,7 @@ func getFollow() {
 	msg := fmt.Sprintf("共关注 %d 个贴吧，其中 %d 个今天已签到，待签 %d 个",
 		followNum, len(success), len(follow))
 	if len(ignored) > 0 {
-		msg += fmt.Sprintf("（另有 %d 个在忽略名单: %s）", len(ignored), strings.Join(ignored, "、"))
+		msg += fmt.Sprintf("（另有 %d 个在忽略名单）", len(ignored))
 	}
 	logInfo("%s", msg)
 }
@@ -424,16 +410,15 @@ func runSign() {
 			post := requestPost(signURL, signBody(s, tbs))
 			if cfg.LogSignResponse {
 				raw, _ := json.Marshal(post)
-				logInfo("%s: 原始响应 %s", s, raw)
+				logInfo("[%d] 原始响应 %s", i+1, raw)
 			}
 			if getString(post, "error_code") == "0" {
 				success = append(success, s)
 				r := parseSignResult(s, post)
 				signedNow = append(signedNow, r)
-				logInfo("%s: 签到成功%s", s, r.describe())
 			} else {
 				remain = append(remain, s)
-				logWarn("%s: 签到失败 -- %s", s, describeSignError(post))
+				logWarn("[%d/%d] 签到失败 -- %s", i+1, len(follow), describeSignError(post))
 			}
 		}
 		follow = remain
@@ -452,8 +437,7 @@ func runSign() {
 		}
 		// 连续多轮零进展，再试下去也是浪费时间
 		if noProgress >= cfg.MaxNoProgressRounds {
-			logWarn("连续 %d 轮没有新增成功，提前结束。剩余 %d 个贴吧: %s",
-				noProgress, len(follow), strings.Join(follow, ", "))
+			logWarn("连续 %d 轮没有新增成功，提前结束。剩余 %d 个未签", noProgress, len(follow))
 			break
 		}
 		// 已经是最后一轮，不需要再等待（Java 版这里会白白多睡 5 分钟）
@@ -484,8 +468,6 @@ func describeSignError(post map[string]any) string {
 	}
 	return "error_code=" + code + " " + msg
 }
-
-// ---------------------------------------------------------------------------
 
 func main() {
 	bduss = firstNonEmpty(argAt(0), os.Getenv("BDUSS"))
@@ -570,24 +552,6 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-// describe 把经验信息渲染成日志后缀，没有数据时返回空串。
-func (r signResult) describe() string {
-	var parts []string
-	if r.exp > 0 {
-		parts = append(parts, fmt.Sprintf("+%d经验", r.exp))
-	}
-	if r.cont > 0 {
-		parts = append(parts, fmt.Sprintf("连续%d天", r.cont))
-	}
-	if r.rank > 0 {
-		parts = append(parts, fmt.Sprintf("今日第%d名", r.rank))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "  " + strings.Join(parts, " ")
 }
 
 // totalExp 本次运行一共挣到的经验。

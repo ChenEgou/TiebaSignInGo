@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -267,5 +266,5 @@ func (c *Config) ignoreSummary() string {
 	if len(c.IgnoreForums) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("忽略名单 (%d): %s", len(c.IgnoreForums), strings.Join(c.IgnoreForums, "、"))
+	return fmt.Sprintf("忽略名单 %d 个", len(c.IgnoreForums))
 }

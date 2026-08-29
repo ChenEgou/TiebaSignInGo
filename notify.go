@@ -103,9 +103,7 @@ func newNotifier(token, chatID string) notifier {
 	return n
 }
 
-// ---------------------------------------------------------------------------
 // 消息内容
-// ---------------------------------------------------------------------------
 
 // alertText 拉取关注列表失败时的告警。这是最需要被看到的一条。
 func alertText(elapsed time.Duration) string {

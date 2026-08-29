@@ -1,16 +1,12 @@
 name: keepalive
 
-# GitHub 官方机制：公开仓库连续 60 天无活动，schedule 触发的 workflow 会被自动禁用。
-# 注意：该规则仅对公开仓库生效。本仓库当前为私有，保活暂时用不上；
-# 将来转为公开后本 workflow 才开始起作用，届时无需任何改动。
-# 这个 workflow 每月推一次空提交，保证 tieba.yml 的定时任务不会被停掉。
-# 不需要保活的话，直接删掉本文件即可。
+# 公开仓库连续 60 天无活动，schedule 触发的 workflow 会被 GitHub 自动禁用。
+# 这个 workflow 每月推一次空提交来规避。不需要的话直接删掉本文件。
 
 on:
   workflow_dispatch:
   schedule:
-    # 每月 1 号 08:19 UTC = 17:19 日本 / 16:19 北京。
-    # 同样避开整点和 00:00 UTC 拥堵段，并与当天其他槽位错开。
+    # 每月 1 号 08:19 UTC = 16:19 北京。避开整点和 00:00 UTC 拥堵段。
     - cron: '19 08 1 * *'
 
 permissions:
