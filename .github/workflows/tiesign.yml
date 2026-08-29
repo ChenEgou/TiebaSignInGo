@@ -3,8 +3,9 @@ name: tiesign
 on:
   workflow_dispatch:
   schedule:
-    - cron: '37 0 * * *'
-    - cron: '23 5 * * *'
+    # 与老仓库 TiebaSignIn 保持完全一致，用于 A/B 对照
+    # 00:05 UTC = 北京 08:05 / 日本 09:05
+    - cron: '05 00 * * *'
 
 jobs:
   sign:
