@@ -135,8 +135,9 @@ Token 脱敏、退出码语义、轮次逻辑端到端。基准数据由 `testda
 
 ## 其他 workflow
 
-- `keepalive.yml` —— 每月推一次空提交。公开仓库连续 60 天无活动会被自动禁用 schedule，用这个规避
-- `delete-runs.yml` —— 每月 1 号自动清理运行记录，保留 7 天内且至少最近 5 条
+- `keepalive.yml` —— 每月 1 号推一次空提交。公开仓库连续 60 天无活动会被自动禁用 schedule，用这个规避。
+  用 `GITHUB_TOKEN` 推的提交不会触发 `tiesign` 的 push，不会多签一次。
+  本地改代码前先 `git pull`，否则会因为远程多了这个提交而推不上去
 
 ## License
 
