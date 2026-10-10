@@ -347,21 +347,25 @@ func getTbs() {
 	}
 }
 
-// getFollow 获取用户关注的贴吧列表，已签到的直接计入 success。
-func getFollow() {
+// forumState 关注列表里一个吧今天的签到状态。
+type forumState struct {
+	name   string
+	signed bool // 列表里 is_sign != "0"
+}
+
+// fetchFollow 拉一次关注列表，忽略名单里的吧不返回。拉取失败时 ok 为 false。
+func fetchFollow() (forums []forumState, ok bool) {
 	jsonObject := requestGet(likeURL)
 	if jsonObject == nil {
 		logError("获取贴吧列表部分出现错误 -- 响应为空或解析失败")
-		return
+		return nil, false
 	}
 	jsonArray := getArray(getObject(jsonObject, "data"), "like_forum")
 	if jsonArray == nil {
 		logError("获取贴吧列表部分出现错误 -- data.like_forum 缺失（BDUSS 是否已失效？）")
-		return
+		return nil, false
 	}
-	logInfo("获取贴吧列表成功")
-	followOK = true
-	followNum = 0
+	ignored = nil // 每次重新统计，多次拉取不会重复累加
 	for _, item := range jsonArray {
 		obj, ok := item.(map[string]any)
 		if !ok {
@@ -373,11 +377,25 @@ func getFollow() {
 			ignored = append(ignored, name)
 			continue
 		}
-		followNum++
-		if getString(obj, "is_sign") == "0" {
-			follow = append(follow, name) // 未签到，待签
+		forums = append(forums, forumState{name: name, signed: getString(obj, "is_sign") != "0"})
+	}
+	return forums, true
+}
+
+// getFollow 获取用户关注的贴吧列表，今天已签的直接计入 success，其余进待签名单。
+func getFollow() {
+	forums, ok := fetchFollow()
+	if !ok {
+		return
+	}
+	logInfo("获取贴吧列表成功")
+	followOK = true
+	followNum = len(forums)
+	for _, f := range forums {
+		if f.signed {
+			success = append(success, f.name) // 今天已经签过了
 		} else {
-			success = append(success, name) // 今天已经签过了
+			follow = append(follow, f.name) // 未签到，待签
 		}
 	}
 	msg := fmt.Sprintf("共关注 %d 个贴吧，其中 %d 个今天已签到，待签 %d 个",
@@ -388,77 +406,107 @@ func getFollow() {
 	logInfo("%s", msg)
 }
 
-// runSign 逐个签到。与 Java 版相比有三处节奏上的改动：
+// runSign 最多签 3 轮：
 //
-//  1. 每两个贴吧之间插入随机间隔（Java 版是 0，会在几秒内把所有请求打完）
-//  2. 全部签完后立即退出，不再做无意义的等待
-//  3. 连续若干轮没有新增成功就提前结束（有些吧永远签不上，重试无用）
+//  1. 第 1 轮：签全部待签的吧
+//  2. 第 2 轮：只补第 1 轮失败的
+//  3. 第 3 轮：先重新拉关注列表，列表显示已签的直接算成功，剩下的再补一次；
+//     补完如果还有失败的，最后再拉一次列表核对
+//
+// 哪一轮之后全部签完就直接结束，不再等待、不再拉列表。
+//
+// 列表核对只会把「失败」改成「成功」，不会反过来：刚签上的吧，
+// 百度的列表不一定马上更新，以列表为准反而会误报失败。
 func runSign() {
-	noProgress := 0
-
-	for round := 1; round <= cfg.RoundLimit; round++ {
-		if len(success) >= followNum || len(follow) == 0 {
-			break
+	for round := 1; round <= 3 && len(follow) > 0; round++ {
+		if round > 1 {
+			pauseBeforeNextRound()
 		}
-
-		logInfo("-----第 %d 轮签到开始，本轮 %d 个贴吧-----", round, len(follow))
-		before := len(success)
-
-		var remain []string
-		for i, s := range follow {
-			if i > 0 {
-				time.Sleep(cfg.signDelay())
-			}
-			post := requestPost(signURL, signBody(s, tbs))
-			if cfg.LogSignResponse {
-				raw, _ := json.Marshal(post)
-				logInfo("[%d] 原始响应 %s", i+1, raw)
-			}
-			switch getString(post, "error_code") {
-			case "0":
-				success = append(success, s)
-				r := parseSignResult(s, post)
-				signedNow = append(signedNow, r)
-			case codeAlreadySigned:
-				// 百度明确说今天已经签过了，算成功。常见于上一轮被报「签得太快」(340011)，
-				// 但百度其实已经把那次签到记上了。不计入 signedNow：这次拿不到经验数。
-				success = append(success, s)
-				logInfo("[%d/%d] 百度返回今天已签过，计为成功 -- %s", i+1, len(follow), describeSignError(post))
-			default:
-				remain = append(remain, s)
-				logWarn("[%d/%d] 签到失败 -- %s", i+1, len(follow), describeSignError(post))
+		if round == 3 {
+			// 前两轮失败的，可能其实已经签上了（例如被报「签得太快」但百度已记上）
+			reconcileWithList()
+			if len(follow) == 0 {
+				return
 			}
 		}
-		follow = remain
-
-		if gained := len(success) - before; gained > 0 {
-			noProgress = 0
-			logInfo("第 %d 轮新增成功 %d 个，累计 %d/%d", round, gained, len(success), followNum)
-		} else {
-			noProgress++
-			logWarn("第 %d 轮没有新增成功（连续 %d 轮）", round, noProgress)
-		}
-
-		// 全部签完，收工
-		if len(success) >= followNum || len(follow) == 0 {
-			break
-		}
-		// 连续多轮零进展，再试下去也是浪费时间
-		if noProgress >= cfg.MaxNoProgressRounds {
-			logWarn("连续 %d 轮没有新增成功，提前结束。剩余 %d 个未签", noProgress, len(follow))
-			break
-		}
-		// 已经是最后一轮，不需要再等待（Java 版这里会白白多睡 5 分钟）
-		if round == cfg.RoundLimit {
-			break
-		}
-
-		d := cfg.roundSleep()
-		// 打印时取整到秒，随机值本身不取整
-		logInfo("等待 %s 后开始下一轮，并重新获取 tbs", d.Round(time.Second))
-		time.Sleep(d)
-		getTbs()
+		signRound(round)
 	}
+	if len(follow) > 0 {
+		reconcileWithList()
+	}
+	if len(follow) > 0 {
+		logWarn("3 轮之后仍有 %d 个未签上", len(follow))
+	}
+}
+
+// signRound 把待签名单里的吧挨个签一遍，失败的留在名单里给下一轮。
+func signRound(round int) {
+	logInfo("-----第 %d 轮签到开始，本轮 %d 个贴吧-----", round, len(follow))
+	before := len(success)
+
+	var remain []string
+	for i, s := range follow {
+		if i > 0 {
+			time.Sleep(cfg.signDelay())
+		}
+		post := requestPost(signURL, signBody(s, tbs))
+		if cfg.LogSignResponse {
+			raw, _ := json.Marshal(post)
+			logInfo("[%d] 原始响应 %s", i+1, raw)
+		}
+		switch getString(post, "error_code") {
+		case "0":
+			success = append(success, s)
+			r := parseSignResult(s, post)
+			signedNow = append(signedNow, r)
+		case codeAlreadySigned:
+			// 百度明确说今天已经签过了，算成功。常见于上一轮被报「签得太快」(340011)，
+			// 但百度其实已经把那次签到记上了。不计入 signedNow：这次拿不到经验数。
+			success = append(success, s)
+			logInfo("[%d/%d] 百度返回今天已签过，计为成功 -- %s", i+1, len(follow), describeSignError(post))
+		default:
+			remain = append(remain, s)
+			logWarn("[%d/%d] 签到失败 -- %s", i+1, len(follow), describeSignError(post))
+		}
+	}
+	follow = remain
+	logInfo("第 %d 轮成功 %d 个，累计 %d/%d", round, len(success)-before, len(success), followNum)
+}
+
+// pauseBeforeNextRound 两轮之间随机等一会儿，免得又被百度提示「签得太快」，
+// 再重新获取 tbs。
+func pauseBeforeNextRound() {
+	d := cfg.roundSleep()
+	// 打印时取整到秒，随机值本身不取整
+	logInfo("等待 %s 后开始下一轮，并重新获取 tbs", d.Round(time.Second))
+	time.Sleep(d)
+	getTbs()
+}
+
+// reconcileWithList 重新拉一次关注列表，把列表显示已签的从待签名单里划掉、计为成功。
+// 拉取失败就沿用签到时的记录，不影响后续流程。
+func reconcileWithList() {
+	forums, ok := fetchFollow()
+	if !ok {
+		logWarn("核对用的关注列表拉取失败，沿用签到时的记录")
+		return
+	}
+	signedInList := make(map[string]bool, len(forums))
+	for _, f := range forums {
+		if f.signed {
+			signedInList[f.name] = true
+		}
+	}
+	var remain []string
+	for _, s := range follow {
+		if signedInList[s] {
+			success = append(success, s)
+		} else {
+			remain = append(remain, s)
+		}
+	}
+	logInfo("核对关注列表：%d 个其实已签上，计为成功；仍有 %d 个未签", len(follow)-len(remain), len(remain))
+	follow = remain
 }
 
 // describeSignError 从签到响应里提取可读的失败原因，方便排查。

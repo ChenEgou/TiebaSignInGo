@@ -155,15 +155,12 @@ func TestRunSignRetriesThenSucceeds(t *testing.T) {
 	}
 }
 
-// TestRunSignStopsAfterNoProgress 永远签不上的贴吧不应该把 5 轮跑满。
+// TestRunSignGivesUpAfterThreeRounds 永远签不上的贴吧最多试 3 次就放弃。
 // Java 版在这种情况下会跑满 5 轮并睡满 25 分钟，这正是"每天 27 分钟"的根因。
-func TestRunSignStopsAfterNoProgress(t *testing.T) {
+func TestRunSignGivesUpAfterThreeRounds(t *testing.T) {
 	forums := []string{"抗压背锅", "已封禁的吧"}
 	fake := newFakeTieba([]string{"已封禁的吧"}, nil)
-	c := fastConfig()
-	c.RoundLimit = 5
-	c.MaxNoProgressRounds = 2
-	resetState(t, c)
+	resetState(t, fastConfig())
 	fake.start(t, forums)
 
 	getTbs()
@@ -173,10 +170,12 @@ func TestRunSignStopsAfterNoProgress(t *testing.T) {
 	if len(success) != 1 {
 		t.Fatalf("成功 %d 个，应为 1 个", len(success))
 	}
-	// 第 1 轮: 2 个请求(1成功1失败) / 第 2 轮: 1 个失败 / 第 3 轮: 1 个失败 -> 连续 2 轮无进展，停
-	// 总计 4 个请求，绝不该达到跑满 5 轮的 6 个
+	// 第 1 轮 2 个请求（1 成功 1 失败），第 2、3 轮各 1 个，共 4 个
 	if fake.signCnt != 4 {
-		t.Errorf("发出 %d 个签到请求，应为 4 个（跑满 5 轮会是 6 个）", fake.signCnt)
+		t.Errorf("发出 %d 个签到请求，应为 4 个", fake.signCnt)
+	}
+	if len(follow) != 1 || follow[0] != "已封禁的吧" {
+		t.Errorf("剩余未签 = %v，want [已封禁的吧]", follow)
 	}
 }
 
@@ -364,26 +363,41 @@ func TestParseSignResultTolerant(t *testing.T) {
 	_ = parseSignResult("测试吧", nil)
 }
 
-// startCustomTieba 用自定义的签到处理函数起一个假服务器，关注列表为 forums（都未签到）。
-func startCustomTieba(t *testing.T, forums []string, sign http.HandlerFunc) {
+// startTieba 用自定义的列表、签到处理函数起一个假服务器。
+func startTieba(t *testing.T, like, sign http.HandlerFunc) {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tbs", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"is_login":1,"tbs":"faketbs123"}`)
 	})
-	mux.HandleFunc("/like", func(w http.ResponseWriter, r *http.Request) {
-		var items []string
-		for _, name := range forums {
-			items = append(items, fmt.Sprintf(`{"forum_name":%q,"is_sign":0}`, name))
-		}
-		fmt.Fprintf(w, `{"data":{"like_forum":[%s]}}`, strings.Join(items, ","))
-	})
+	mux.HandleFunc("/like", like)
 	mux.HandleFunc("/sign", sign)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	oldTbs, oldLike, oldSign := tbsURL, likeURL, signURL
 	tbsURL, likeURL, signURL = srv.URL+"/tbs", srv.URL+"/like", srv.URL+"/sign"
 	t.Cleanup(func() { tbsURL, likeURL, signURL = oldTbs, oldLike, oldSign })
+}
+
+// likeList 渲染关注列表响应。signed 里的吧 is_sign 为 1，其余为 0。
+func likeList(forums []string, signed map[string]bool) string {
+	var items []string
+	for _, name := range forums {
+		is := 0
+		if signed[name] {
+			is = 1
+		}
+		items = append(items, fmt.Sprintf(`{"forum_name":%q,"is_sign":%d}`, name, is))
+	}
+	return fmt.Sprintf(`{"data":{"like_forum":[%s]}}`, strings.Join(items, ","))
+}
+
+// startCustomTieba 关注列表固定为 forums 且永远显示未签（模拟列表更新滞后）。
+func startCustomTieba(t *testing.T, forums []string, sign http.HandlerFunc) {
+	t.Helper()
+	startTieba(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, likeList(forums, nil))
+	}, sign)
 }
 
 // TestRunSignTooFastThenAlreadySigned 复现 2026-10-10 的真实情况：
@@ -454,5 +468,200 @@ func TestRunSignAlreadySignedFirstRound(t *testing.T) {
 	}
 	if cnt != 1 {
 		t.Errorf("请求了 %d 次，want 1（不该进入第 2 轮）", cnt)
+	}
+}
+
+// counter 按吧名统计签到请求次数，并发安全。
+type counter struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func (c *counter) inc(k string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == nil {
+		c.n = map[string]int{}
+	}
+	c.n[k]++
+	return c.n[k]
+}
+
+func (c *counter) get(k string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n[k]
+}
+
+const (
+	respOK      = `{"error_code":"0","user_info":{"sign_bonus_point":"8"}}`
+	respTooFast = `{"error_code":"340011","error_msg":"你签得太快了，先看看贴子再来签吧:)"}`
+)
+
+// TestRunSignListConfirmsAmbiguousFailure 前两轮都回「签得太快」，但百度其实已经记上了。
+// 第 3 轮前核对列表，列表显示已签 -> 直接算成功，不再发第 3 次请求。
+func TestRunSignListConfirmsAmbiguousFailure(t *testing.T) {
+	resetState(t, fastConfig())
+	forums := []string{"抗压背锅", "神通者", "孙笑川"}
+	var calls counter
+	var mu sync.Mutex
+	recorded := map[string]bool{}
+	startTieba(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprint(w, likeList(forums, recorded))
+	}, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		kw := r.FormValue("kw")
+		calls.inc(kw)
+		mu.Lock()
+		recorded[kw] = true // 不管回什么，百度都记上了
+		mu.Unlock()
+		if kw == "神通者" {
+			fmt.Fprint(w, respTooFast)
+			return
+		}
+		fmt.Fprint(w, respOK)
+	})
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if len(success) != 3 || len(follow) != 0 {
+		t.Fatalf("success=%v follow=%v，want 全部成功", success, follow)
+	}
+	if got := calls.get("神通者"); got != 2 {
+		t.Errorf("神通者请求 %d 次，want 2（列表已确认签上，第 3 轮不该再发）", got)
+	}
+}
+
+// TestRunSignThirdRoundRescues 前两轮真失败、列表也显示没签，第 3 轮补签成功。
+func TestRunSignThirdRoundRescues(t *testing.T) {
+	resetState(t, fastConfig())
+	var calls counter
+	startCustomTieba(t, []string{"抗压背锅", "神通者"}, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		kw := r.FormValue("kw")
+		if n := calls.inc(kw); kw == "神通者" && n <= 2 {
+			fmt.Fprint(w, respTooFast)
+			return
+		}
+		fmt.Fprint(w, respOK)
+	})
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if len(success) != 2 || len(follow) != 0 {
+		t.Fatalf("success=%v follow=%v，want 全部成功", success, follow)
+	}
+	if got := calls.get("神通者"); got != 3 {
+		t.Errorf("神通者请求 %d 次，want 3", got)
+	}
+	if len(signedNow) != 2 {
+		t.Errorf("本次新签 %d 个，want 2（第 3 轮签上的也有经验）", len(signedNow))
+	}
+}
+
+// TestRunSignListLagNoFalseFailure 列表更新滞后、一直显示没签时，
+// 已经确认签上的吧不能被改判成失败，也不能被重复签。
+func TestRunSignListLagNoFalseFailure(t *testing.T) {
+	resetState(t, fastConfig())
+	var calls counter
+	startCustomTieba(t, []string{"抗压背锅", "已封禁的吧"}, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		kw := r.FormValue("kw")
+		calls.inc(kw)
+		if kw == "已封禁的吧" {
+			fmt.Fprint(w, respTooFast)
+			return
+		}
+		fmt.Fprint(w, respOK)
+	})
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if len(success) != 1 || success[0] != "抗压背锅" {
+		t.Errorf("success = %v，want [抗压背锅]（不能因为列表滞后被改判或重复计数）", success)
+	}
+	if got := calls.get("抗压背锅"); got != 1 {
+		t.Errorf("抗压背锅请求 %d 次，want 1（已确认签上，不该重签）", got)
+	}
+	if got := calls.get("已封禁的吧"); got != 3 {
+		t.Errorf("已封禁的吧请求 %d 次，want 3", got)
+	}
+	if len(follow) != 1 {
+		t.Errorf("剩余未签 = %v，want 1 个", follow)
+	}
+}
+
+// TestRunSignNoRefetchWhenRoundTwoFixesAll 前两轮就全部签完时，不需要再拉列表。
+func TestRunSignNoRefetchWhenRoundTwoFixesAll(t *testing.T) {
+	resetState(t, fastConfig())
+	forums := []string{"抗压背锅", "孙笑川"}
+	var likeCalls, calls counter
+	startTieba(t, func(w http.ResponseWriter, r *http.Request) {
+		likeCalls.inc("like")
+		fmt.Fprint(w, likeList(forums, nil))
+	}, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		kw := r.FormValue("kw")
+		if n := calls.inc(kw); kw == "孙笑川" && n == 1 {
+			fmt.Fprint(w, respTooFast)
+			return
+		}
+		fmt.Fprint(w, respOK)
+	})
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if len(success) != 2 {
+		t.Fatalf("成功 %d 个，want 2", len(success))
+	}
+	if got := likeCalls.get("like"); got != 1 {
+		t.Errorf("拉了 %d 次列表，want 1（第 2 轮已全部签完，不需要核对）", got)
+	}
+}
+
+// TestRunSignReconcileFetchFailure 核对时列表拉不到，不能崩，照常完成第 3 轮。
+func TestRunSignReconcileFetchFailure(t *testing.T) {
+	resetState(t, fastConfig())
+	forums := []string{"抗压背锅", "已封禁的吧"}
+	var likeCalls, calls counter
+	startTieba(t, func(w http.ResponseWriter, r *http.Request) {
+		if likeCalls.inc("like") > 1 {
+			fmt.Fprint(w, `{"no":1,"error":"not logined!"}`)
+			return
+		}
+		fmt.Fprint(w, likeList(forums, nil))
+	}, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		kw := r.FormValue("kw")
+		calls.inc(kw)
+		if kw == "已封禁的吧" {
+			fmt.Fprint(w, respTooFast)
+			return
+		}
+		fmt.Fprint(w, respOK)
+	})
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if got := calls.get("已封禁的吧"); got != 3 {
+		t.Errorf("已封禁的吧请求 %d 次，want 3（核对失败也要继续第 3 轮）", got)
+	}
+	if len(success) != 1 || len(follow) != 1 {
+		t.Errorf("success=%v follow=%v，want 1 成功 1 失败", success, follow)
+	}
+	if !followOK {
+		t.Error("核对失败不该把 followOK 改成 false")
 	}
 }

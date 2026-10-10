@@ -18,13 +18,6 @@ type Config struct {
 	// 正常使用应保持 false。
 	CompatJavaMD5 bool `json:"compatJavaMD5"`
 
-	// RoundLimit 最多签到轮数。
-	RoundLimit int `json:"roundLimit"`
-
-	// MaxNoProgressRounds 连续多少轮没有任何新增签到成功就提前结束。
-	// 有些贴吧（例如已封禁的）是永远签不上的，继续重试只是浪费时间。
-	MaxNoProgressRounds int `json:"maxNoProgressRounds"`
-
 	// SignDelayMin/Max 每两个贴吧的签到请求之间的随机间隔。
 	// 这是最重要的一项：原 Java 版是 0，会在几秒内把所有请求打完。
 	SignDelayMin string `json:"signDelayMin"`
@@ -73,18 +66,16 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		CompatJavaMD5:       false,
-		RoundLimit:          5,
-		MaxNoProgressRounds: 2,
-		SignDelayMin:        "1s",
-		SignDelayMax:        "3s",
-		RoundSleepMin:       "30s",
-		RoundSleepMax:       "90s",
-		StartupJitterMax:    "0s",
-		HTTPTimeout:         "30s",
-		FormEncoding:        EncodeMinimal,
-		IgnoreForums:        []string{"贴吧热议"},
-		LogSignResponse:     false,
+		CompatJavaMD5:    false,
+		SignDelayMin:     "1s",
+		SignDelayMax:     "3s",
+		RoundSleepMin:    "30s",
+		RoundSleepMax:    "90s",
+		StartupJitterMax: "0s",
+		HTTPTimeout:      "30s",
+		FormEncoding:     EncodeMinimal,
+		IgnoreForums:     []string{"贴吧热议"},
+		LogSignResponse:  false,
 	}
 }
 
@@ -148,20 +139,6 @@ func applyEnv(cfg *Config) {
 		}
 	}
 
-	if v := os.Getenv("TIEBA_ROUND_LIMIT"); v != "" {
-		if n, err := parsePositiveInt(v); err == nil {
-			cfg.RoundLimit = n
-		} else {
-			logWarn("TIEBA_ROUND_LIMIT=%q 无效，仍用 %d", v, cfg.RoundLimit)
-		}
-	}
-	if v := os.Getenv("TIEBA_MAX_NO_PROGRESS_ROUNDS"); v != "" {
-		if n, err := parsePositiveInt(v); err == nil {
-			cfg.MaxNoProgressRounds = n
-		} else {
-			logWarn("TIEBA_MAX_NO_PROGRESS_ROUNDS=%q 无效，仍用 %d", v, cfg.MaxNoProgressRounds)
-		}
-	}
 	if v := os.Getenv("TIEBA_COMPAT_JAVA_MD5"); v != "" {
 		switch v {
 		case "1", "true", "TRUE", "True":
@@ -172,17 +149,6 @@ func applyEnv(cfg *Config) {
 			logWarn("TIEBA_COMPAT_JAVA_MD5=%q 无效，仍用 %v", v, cfg.CompatJavaMD5)
 		}
 	}
-}
-
-func parsePositiveInt(s string) (int, error) {
-	var n int
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
-		return 0, err
-	}
-	if n <= 0 {
-		return 0, fmt.Errorf("必须为正整数")
-	}
-	return n, nil
 }
 
 // parseDurations 把字符串时长解析成 time.Duration，非法值退回默认值，
@@ -213,14 +179,6 @@ func (c *Config) parseDurations() {
 	if c.roundSleepMax < c.roundSleepMin {
 		logWarn("roundSleepMax(%s) 小于 roundSleepMin(%s)，已对调", c.roundSleepMax, c.roundSleepMin)
 		c.roundSleepMin, c.roundSleepMax = c.roundSleepMax, c.roundSleepMin
-	}
-	if c.RoundLimit <= 0 {
-		logWarn("roundLimit=%d 无效，改用 %d", c.RoundLimit, def.RoundLimit)
-		c.RoundLimit = def.RoundLimit
-	}
-	if c.MaxNoProgressRounds <= 0 {
-		logWarn("maxNoProgressRounds=%d 无效，改用 %d", c.MaxNoProgressRounds, def.MaxNoProgressRounds)
-		c.MaxNoProgressRounds = def.MaxNoProgressRounds
 	}
 	switch c.FormEncoding {
 	case EncodeNone, EncodeMinimal, EncodeFull:
@@ -255,9 +213,9 @@ func randDuration(min, max time.Duration) time.Duration {
 // summary 供启动时打印，方便在 Actions 日志里确认这次跑用的是什么参数。
 func (c *Config) summary() string {
 	return fmt.Sprintf(
-		"签到间隔 %s~%s | 轮间等待 %s~%s | 最多 %d 轮 | 连续 %d 轮无进展则提前结束 | 启动抖动 ≤%s | 超时 %s | 表单编码 %s | JavaMD5兼容 %v",
+		"签到间隔 %s~%s | 轮间等待 %s~%s | 最多 3 轮 | 启动抖动 ≤%s | 超时 %s | 表单编码 %s | JavaMD5兼容 %v",
 		c.signDelayMin, c.signDelayMax, c.roundSleepMin, c.roundSleepMax,
-		c.RoundLimit, c.MaxNoProgressRounds, c.startupJitter, c.httpTimeout,
+		c.startupJitter, c.httpTimeout,
 		c.FormEncoding, c.CompatJavaMD5)
 }
 

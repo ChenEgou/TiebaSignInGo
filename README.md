@@ -73,6 +73,28 @@ set -a && source .env && set +a && go run .
 > **日志里不打吧名**，只有计数和错误码；吧名只出现在 Telegram 推送里。
 > 仓库是公开的，Actions 日志任何人可见。
 
+## 签到与重试
+
+最多 3 轮，哪一轮后全部签完就直接结束：
+
+1. **第 1 轮**：签全部待签的吧
+2. **第 2 轮**：只补第 1 轮失败的
+3. **第 3 轮**：先重新拉关注列表，列表显示已签的直接算成功，剩下的再补一次；
+   补完还有失败的，再拉一次列表核对
+
+每轮之间随机等 30～90 秒并重新获取 tbs，免得被百度提示「签得太快」。
+
+判定成功的依据，任意一个成立即可：
+
+| 依据 | 说明 |
+|---|---|
+| 签到返回 `error_code=0` | 成功 |
+| 签到返回 `160002`「你之前已经签过了」 | 成功。常见于上一轮被报 `340011`「签得太快」但百度其实已记上 |
+| 核对时关注列表显示已签 | 成功 |
+
+列表核对只会把失败改成成功，不会反过来 —— 刚签上的吧，列表不一定马上更新，
+以列表为准反而会误报失败。
+
 ## 配置
 
 `config.json`，改完提交即可生效：
@@ -80,8 +102,6 @@ set -a && source .env && set +a && go run .
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `compatJavaMD5` | `false` | `true` 退回 Java 版有缺陷的 MD5，仅对拍用 |
-| `roundLimit` | `5` | 最多重试几轮 |
-| `maxNoProgressRounds` | `2` | 连续几轮零新增就提前收工 |
 | `signDelayMin` / `Max` | `1s` / `3s` | 每两个吧之间的随机间隔 |
 | `roundSleepMin` / `Max` | `30s` / `90s` | 轮间随机等待 |
 | `startupJitterMax` | `0s` | 启动前随机延迟上限 |
@@ -91,7 +111,7 @@ set -a && source .env && set +a && go run .
 | `logSignResponse` | `false` | 打印签到原始响应，排查用 |
 
 每项都能用环境变量覆盖（优先级更高），命名为 `TIEBA_` + 字段名大写下划线，
-例如 `TIEBA_SIGN_DELAY_MIN`、`TIEBA_ROUND_LIMIT`。`TIEBA_CONFIG` 指定配置文件路径。
+例如 `TIEBA_SIGN_DELAY_MIN`、`TIEBA_ROUND_SLEEP_MAX`。`TIEBA_CONFIG` 指定配置文件路径。
 `ignoreForums` 是数组，只能在 JSON 里改。
 
 非法值告警并退回默认；`min > max` 自动对调；配置文件不存在也能跑。

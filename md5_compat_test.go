@@ -188,7 +188,6 @@ func TestConfigDefaults(t *testing.T) {
 func TestConfigEnvOverride(t *testing.T) {
 	t.Setenv("TIEBA_SIGN_DELAY_MIN", "7s")
 	t.Setenv("TIEBA_SIGN_DELAY_MAX", "9s")
-	t.Setenv("TIEBA_ROUND_LIMIT", "3")
 	t.Setenv("TIEBA_COMPAT_JAVA_MD5", "true")
 
 	c := defaultConfig()
@@ -201,9 +200,6 @@ func TestConfigEnvOverride(t *testing.T) {
 	if c.signDelayMax != 9*time.Second {
 		t.Errorf("signDelayMax = %s, want 9s", c.signDelayMax)
 	}
-	if c.RoundLimit != 3 {
-		t.Errorf("RoundLimit = %d, want 3", c.RoundLimit)
-	}
 	if !c.CompatJavaMD5 {
 		t.Error("CompatJavaMD5 应被环境变量置为 true")
 	}
@@ -213,20 +209,12 @@ func TestConfigEnvOverride(t *testing.T) {
 func TestConfigInvalidValuesFallBack(t *testing.T) {
 	c := defaultConfig()
 	c.SignDelayMin = "不是时长"
-	c.RoundLimit = -1
-	c.MaxNoProgressRounds = 0
 	c.parseDurations()
 
 	def := defaultConfig()
 	def.parseDurations()
 	if c.signDelayMin != def.signDelayMin {
 		t.Errorf("非法 signDelayMin 应退回 %s，实际 %s", def.signDelayMin, c.signDelayMin)
-	}
-	if c.RoundLimit != def.RoundLimit {
-		t.Errorf("非法 roundLimit 应退回 %d，实际 %d", def.RoundLimit, c.RoundLimit)
-	}
-	if c.MaxNoProgressRounds != def.MaxNoProgressRounds {
-		t.Errorf("非法 maxNoProgressRounds 应退回 %d，实际 %d", def.MaxNoProgressRounds, c.MaxNoProgressRounds)
 	}
 }
 
