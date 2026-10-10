@@ -65,7 +65,8 @@ func (f *fakeTieba) start(t *testing.T, forums []string) *httptest.Server {
 		f.mu.Unlock()
 
 		if fail {
-			fmt.Fprint(w, `{"error_code":"160002","error_msg":"签到失败"}`)
+			// 用「签得太快」模拟失败。注意不能用 160002，那是「已签过」，会被计为成功
+			fmt.Fprint(w, `{"error_code":"340011","error_msg":"你签得太快了，先看看贴子再来签吧:)"}`)
 			return
 		}
 		fmt.Fprintf(w, `{"error_code":"0","user_info":{"sign_bonus_point":"8","cont_sign_num":"120","user_sign_rank":"3421"}}`)
@@ -361,4 +362,97 @@ func TestParseSignResultTolerant(t *testing.T) {
 	// nil 也不能崩
 	expWarned = false
 	_ = parseSignResult("测试吧", nil)
+}
+
+// startCustomTieba 用自定义的签到处理函数起一个假服务器，关注列表为 forums（都未签到）。
+func startCustomTieba(t *testing.T, forums []string, sign http.HandlerFunc) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tbs", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"is_login":1,"tbs":"faketbs123"}`)
+	})
+	mux.HandleFunc("/like", func(w http.ResponseWriter, r *http.Request) {
+		var items []string
+		for _, name := range forums {
+			items = append(items, fmt.Sprintf(`{"forum_name":%q,"is_sign":0}`, name))
+		}
+		fmt.Fprintf(w, `{"data":{"like_forum":[%s]}}`, strings.Join(items, ","))
+	})
+	mux.HandleFunc("/sign", sign)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	oldTbs, oldLike, oldSign := tbsURL, likeURL, signURL
+	tbsURL, likeURL, signURL = srv.URL+"/tbs", srv.URL+"/like", srv.URL+"/sign"
+	t.Cleanup(func() { tbsURL, likeURL, signURL = oldTbs, oldLike, oldSign })
+}
+
+// TestRunSignTooFastThenAlreadySigned 复现 2026-10-10 的真实情况：
+// 第 1 轮某个吧返回 340011「签得太快」，但百度其实已经记上了；
+// 第 2 轮再签返回 160002「已经签过了」。这必须算成功，而不是一直重试到放弃再报失败。
+func TestRunSignTooFastThenAlreadySigned(t *testing.T) {
+	resetState(t, fastConfig())
+	var mu sync.Mutex
+	calls := map[string]int{}
+	startCustomTieba(t, []string{"抗压背锅", "神通者", "孙笑川"}, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		kw := r.FormValue("kw")
+		mu.Lock()
+		calls[kw]++
+		n := calls[kw]
+		mu.Unlock()
+		switch {
+		case kw == "神通者" && n == 1:
+			fmt.Fprint(w, `{"error_code":"340011","error_msg":"你签得太快了，先看看贴子再来签吧:)"}`)
+		case kw == "神通者":
+			fmt.Fprint(w, `{"error_code":"160002","error_msg":"亲，你之前已经签过了"}`)
+		default:
+			fmt.Fprint(w, `{"error_code":"0","user_info":{"sign_bonus_point":"8"}}`)
+		}
+	})
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if len(success) != 3 {
+		t.Fatalf("成功 %d 个，want 3（160002 应计为成功）", len(success))
+	}
+	if len(follow) != 0 {
+		t.Errorf("还剩 %v 未签，want 无（推送里不该再列为失败）", follow)
+	}
+	if calls["神通者"] != 2 {
+		t.Errorf("神通者请求了 %d 次，want 2（第 2 轮确认已签就该停，不该再重试）", calls["神通者"])
+	}
+	// 160002 拿不到经验，不计入本次新签
+	if len(signedNow) != 2 {
+		t.Errorf("本次新签 %d 个，want 2", len(signedNow))
+	}
+	if code := exitCode(followOK, followNum, len(success)); code != 0 {
+		t.Errorf("退出码 %d，want 0", code)
+	}
+}
+
+// TestRunSignAlreadySignedFirstRound 第 1 轮就返回 160002（比如列表拉完后在手机上签了）
+// 也直接算成功，不进入第 2 轮。
+func TestRunSignAlreadySignedFirstRound(t *testing.T) {
+	resetState(t, fastConfig())
+	var cnt int
+	var mu sync.Mutex
+	startCustomTieba(t, []string{"抗压背锅"}, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		cnt++
+		mu.Unlock()
+		fmt.Fprint(w, `{"error_code":"160002","error_msg":"亲，你之前已经签过了"}`)
+	})
+
+	getTbs()
+	getFollow()
+	runSign()
+
+	if len(success) != 1 || len(follow) != 0 {
+		t.Errorf("success=%v follow=%v，want 1 个成功、0 个剩余", success, follow)
+	}
+	if cnt != 1 {
+		t.Errorf("请求了 %d 次，want 1（不该进入第 2 轮）", cnt)
+	}
 }

@@ -36,6 +36,8 @@ const (
 	userAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36"
 	// 签名盐值，来自贴吧安卓客户端
 	signSalt = "tiebaclient!!!"
+	// 签到接口返回「亲，你之前已经签过了」时的错误码
+	codeAlreadySigned = "160002"
 	// Java 版 POST 请求硬编码的 Host 头（与 signURL 的实际域名 c.tieba.baidu.com
 	// 不一致，这是原版行为，照搬）
 	postHost = "tieba.baidu.com"
@@ -412,11 +414,17 @@ func runSign() {
 				raw, _ := json.Marshal(post)
 				logInfo("[%d] 原始响应 %s", i+1, raw)
 			}
-			if getString(post, "error_code") == "0" {
+			switch getString(post, "error_code") {
+			case "0":
 				success = append(success, s)
 				r := parseSignResult(s, post)
 				signedNow = append(signedNow, r)
-			} else {
+			case codeAlreadySigned:
+				// 百度明确说今天已经签过了，算成功。常见于上一轮被报「签得太快」(340011)，
+				// 但百度其实已经把那次签到记上了。不计入 signedNow：这次拿不到经验数。
+				success = append(success, s)
+				logInfo("[%d/%d] 百度返回今天已签过，计为成功 -- %s", i+1, len(follow), describeSignError(post))
+			default:
 				remain = append(remain, s)
 				logWarn("[%d/%d] 签到失败 -- %s", i+1, len(follow), describeSignError(post))
 			}
